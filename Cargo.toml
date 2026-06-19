@@ -1,0 +1,15 @@
+[package]
+name = "rodecaster-protocol"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yeradon"]
+description = "JUCE var / ValueTree codec and transport frame for the RODECaster Pro II / Duo wire protocol"
+license = "MIT"
+repository = "https://github.com/Yeradon/rodecaster-protocol"
+readme = "README.md"
+keywords = ["rodecaster", "rode", "juce", "valuetree", "protocol"]
+categories = ["encoding", "parser-implementations"]
+
+# Intentionally dependency-free: the codec is pure std so downstream tools can
+# adopt it without pulling a dependency tree.
+[dependencies]
