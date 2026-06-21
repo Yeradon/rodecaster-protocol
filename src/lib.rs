@@ -60,7 +60,7 @@ pub use change_frame::ChangeFrame;
 pub use command::RodeCommand;
 pub use commands::Command;
 pub use events::{decode_event, DeviceEvent};
-pub use frame::{Packet, MAGIC_HEADER};
+pub use frame::{frame_payload, scan_frame, FrameScan, Packet, MAGIC_HEADER};
 pub use juce_var::{read_value, Reader, Value};
 pub use layout::Layout;
 pub use valuetree::{parse_valuetree, Node, Property};

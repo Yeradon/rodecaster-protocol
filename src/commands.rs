@@ -26,6 +26,38 @@ const MIX_LINK_REQUEST_BLOB: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02];
 /// (its encoder uses `u32::MAX` which rolls over to the same `i32::-1`).
 const CHANNEL_INPUT_SOURCE_UNASSIGNED: i64 = -1;
 
+/// Verbatim wire bytes for the screen-wake message ([`Command::ScreenTouched`]).
+///
+/// This is NOT a well-formed `propertyChanged` frame and so cannot go through
+/// [`change_frame::encode_property_changed`]: it is the `propertyChanged`
+/// header (`changeType=1`, then `compressedInt(1)` for nLevels, then a path
+/// num-bytes prefix `0x01`) followed *directly* by the property name with no
+/// path value and no var value. The device special-cases it. Decoding it
+/// through the generic codec would swallow the first name byte as the path
+/// value, so it is emitted as a fixed literal. It is layout-independent (a
+/// global "wake the display" request), so there is nothing to discover.
+const SCREEN_TOUCHED_FRAME: [u8; 18] = [
+    0x01, // changeType = PROPERTY_CHANGED
+    0x01, 0x01, // compressedInt(1) = nLevels
+    0x01, // path[0] num-bytes prefix (the name bytes follow with no value)
+    b's', b'c', b'r', b'e', b'e', b'n', b'T', b'o', b'u', b'c', b'h', b'e', b'd', 0x00,
+];
+
+/// Root-child index that owns `powerOffRequest` on RODECaster Pro II firmware
+/// 1.7.3 (empirically captured). Unlike the channel/mix/fader families, this
+/// node is not part of a discoverable run in the fullSync, so it is pinned
+/// here rather than derived from [`Layout`]. Revisit if a newer firmware (or
+/// the Duo) addresses power-off differently.
+const POWER_OFF_NODE_INDEX: u32 = 15;
+
+/// Path offset for a CallMe routing request. CallMe return channels are
+/// addressed *outside* the regular mix matrix (their sources sit past
+/// `Layout::source_count`, so `mix_cell_path` cannot reach them). The device
+/// instead accepts a dedicated single-level request path
+/// `(source_index << 8) | (CALLME_MIX_PATH_OFFSET + mix)` carrying
+/// `mixLinkRequest` / `mixUnlinkRequest`. Confirmed against firmware 1.7.3.
+const CALLME_MIX_PATH_OFFSET: u32 = 4;
+
 /// Outgoing Rodecaster command.
 ///
 /// Each variant addresses a logical entity (fader strip, mix matrix cell);
@@ -52,6 +84,19 @@ pub enum Command {
     LinkMix { source: u8, mix: u8 },
     /// Unlink a routing matrix cell.
     UnlinkMix { source: u8, mix: u8 },
+    /// Wake the device display. A fixed, layout-independent message; see
+    /// [`SCREEN_TOUCHED_FRAME`].
+    ScreenTouched,
+    /// Request the device power off.
+    PowerOff,
+    /// Link a CallMe return channel into a mix. `source` is the device
+    /// protocol source id of the CallMe channel (16/17/18 on firmware 1.7.3).
+    /// CallMe uses a dedicated request address outside the mix matrix, so this
+    /// sends a single `mixLinkRequest` (no preceding enable, unlike
+    /// [`Command::LinkMix`]).
+    LinkCallMe { source: u8, mix: u8 },
+    /// Unlink a CallMe return channel from a mix. See [`Command::LinkCallMe`].
+    UnlinkCallMe { source: u8, mix: u8 },
 }
 
 impl Command {
@@ -133,8 +178,32 @@ impl Command {
                     &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
                 )])
             }
+            Command::ScreenTouched => Ok(vec![SCREEN_TOUCHED_FRAME.to_vec()]),
+            Command::PowerOff => Ok(vec![change_frame::encode_property_changed(
+                &[POWER_OFF_NODE_INDEX],
+                "powerOffRequest",
+                &Value::Bool(true),
+            )]),
+            Command::LinkCallMe { source, mix } => Ok(vec![change_frame::encode_property_changed(
+                &callme_request_path(*source, *mix),
+                "mixLinkRequest",
+                &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
+            )]),
+            Command::UnlinkCallMe { source, mix } => {
+                Ok(vec![change_frame::encode_property_changed(
+                    &callme_request_path(*source, *mix),
+                    "mixUnlinkRequest",
+                    &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
+                )])
+            }
         }
     }
+}
+
+/// Single-level request path for a CallMe routing cell. See
+/// [`CALLME_MIX_PATH_OFFSET`].
+fn callme_request_path(source: u8, mix: u8) -> Vec<u32> {
+    vec![((source as u32) << 8) | (CALLME_MIX_PATH_OFFSET + mix as u32)]
 }
 
 fn channel_path(layout: &Layout, fader: u8) -> Result<Vec<u32>, EncodeError> {
@@ -487,5 +556,59 @@ mod tests {
         };
         assert_eq!(path_a, vec![3]);
         assert_eq!(path_b, vec![5]);
+    }
+
+    // --- Frozen wire-byte goldens for the layout-independent / special-path
+    // commands. The var-value byte sequences (Bool, Binary) are the exact
+    // frames pinned by `juce_var::tests::write_matches_known_juce_frames`.
+
+    #[test]
+    fn screen_touched_golden_bytes() {
+        let bytes = Command::ScreenTouched.encode(&layout()).unwrap();
+        assert_eq!(bytes.len(), 1);
+        // Header (changeType + nLevels=1 + path num-bytes prefix) then the
+        // name with NO path value and NO var value. Not a clean propertyChanged.
+        let mut expected = vec![0x01, 0x01, 0x01, 0x01];
+        expected.extend_from_slice(b"screenTouched\0");
+        assert_eq!(bytes[0], expected);
+    }
+
+    #[test]
+    fn power_off_golden_bytes() {
+        let bytes = Command::PowerOff.encode(&layout()).unwrap();
+        assert_eq!(bytes.len(), 1);
+        // propertyChanged, path=[15], "powerOffRequest", var Bool(true).
+        let mut expected = vec![0x01, 0x01, 0x01, 0x01, 0x0f];
+        expected.extend_from_slice(b"powerOffRequest\0");
+        expected.extend_from_slice(&[0x01, 0x01, 0x02]); // var Bool(true)
+        assert_eq!(bytes[0], expected);
+    }
+
+    #[test]
+    fn link_callme_golden_bytes() {
+        // source = 16 (CallMe1 protocol index), mix = 0.
+        let bytes = Command::LinkCallMe { source: 16, mix: 0 }
+            .encode(&layout())
+            .unwrap();
+        assert_eq!(bytes.len(), 1);
+        // path[0] = (16<<8)|(4+0) = 4100 -> 2-byte compint `02 04 10`.
+        let mut expected = vec![0x01, 0x01, 0x01, 0x02, 0x04, 0x10];
+        expected.extend_from_slice(b"mixLinkRequest\0");
+        expected.extend_from_slice(&[0x01, 0x07, 0x08, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02]); // var Binary blob
+        assert_eq!(bytes[0], expected);
+    }
+
+    #[test]
+    fn unlink_callme_golden_bytes() {
+        // source = 17 (CallMe2 protocol index), mix = 2.
+        let bytes = Command::UnlinkCallMe { source: 17, mix: 2 }
+            .encode(&layout())
+            .unwrap();
+        assert_eq!(bytes.len(), 1);
+        // path[0] = (17<<8)|(4+2) = 4358 -> 2-byte compint `02 06 11`.
+        let mut expected = vec![0x01, 0x01, 0x01, 0x02, 0x06, 0x11];
+        expected.extend_from_slice(b"mixUnlinkRequest\0");
+        expected.extend_from_slice(&[0x01, 0x07, 0x08, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02]); // var Binary blob
+        assert_eq!(bytes[0], expected);
     }
 }
