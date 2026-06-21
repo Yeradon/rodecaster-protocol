@@ -5,22 +5,20 @@
 //! routing through [`crate::change_frame`] and resolving paths through a
 //! [`crate::Layout`] discovered from the device's fullSync.
 //!
-//! ## Deferred properties
+//! ## Asymmetric echo addressing
 //!
-//! Two property names are deliberately **not** decoded into typed events in
-//! v0.2 and surface as [`DeviceEvent::Unknown`]:
+//! Two echoes the device emits are addressed differently from their write
+//! paths, empirically derived on firmware 1.7.3:
 //!
-//! - `channelInputSource`: the device emits echoes at a stride that differs
-//!   from the write path (empirically stride 6 vs stride 1 on firmware 1.7.3).
-//!   The exact echo path needs a real capture to verify before the crate
-//!   commits to a decode formula.
-//! - `encoderSignal` (fader touch): the existing server reads its `raw_id`
-//!   directly as a fader index, but the actual JUCE path the device emits
-//!   has not been confirmed against a capture. Deferred to avoid shipping a
-//!   guess as a typed event.
+//! - `channelInputSource` ([`DeviceEvent::FaderAssignmentChanged`]): written at
+//!   stride 1 from `first_channel`, but echoed back at **stride 6**
+//!   (`0x1C`=fader0, `0x22`=fader1, ...). [`decode_property`] resolves the echo
+//!   with that stride.
+//! - `encoderSignal` ([`DeviceEvent::FaderTouched`]): a single-level path whose
+//!   value is the raw fader index (no base offset).
 //!
-//! Both will move out of `Unknown` into typed variants in a future version
-//! once their wire paths are confirmed.
+//! Both formulas reproduce the behaviour the reference server ran in
+//! production; a future capture on newer firmware may refine them.
 
 use crate::change_frame::{decode as decode_frame, ChangeFrame};
 use crate::juce_var::Value;
@@ -48,6 +46,18 @@ pub enum DeviceEvent {
     FaderLevelChanged {
         fader: u8,
         level: u8,
+    },
+    /// A fader strip was touched (the device's `encoderSignal`). The wire
+    /// addresses it by raw fader index (single-level path, no base offset).
+    FaderTouched {
+        fader: u8,
+    },
+    /// A fader's input-source assignment changed (`channelInputSource` echo,
+    /// resolved at the stride-6 echo addressing — see module docs). `source`
+    /// is `None` when the slot was unassigned (wire value < 0).
+    FaderAssignmentChanged {
+        fader: u8,
+        source: Option<u8>,
     },
 
     MixLevelChanged {
@@ -124,8 +134,9 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
                     return DeviceEvent::FaderCueChanged { fader, enabled };
                 }
             }
-            // "channelInputSource" intentionally falls through to Unknown.
-            // See module docs for why (asymmetric echo, awaiting capture).
+            // "channelInputSource" is NOT handled here: its echo uses stride-6
+            // addressing (not the stride-1 `channel_index_from_path`), so it is
+            // resolved separately below.
             _ => {}
         }
     }
@@ -176,6 +187,38 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
                 }
             }
             _ => {}
+        }
+    }
+
+    // encoderSignal (fader touch): single-level path whose value IS the fader
+    // index (stride 1, no base offset). See module docs.
+    if name == "encoderSignal" {
+        if let Some(&raw) = path.first() {
+            if raw < layout.fader_count() as u32 {
+                return DeviceEvent::FaderTouched { fader: raw as u8 };
+            }
+        }
+    }
+
+    // channelInputSource echo: addressed at stride 6 from `first_channel`,
+    // asymmetric with the stride-1 write path. See module docs. A wire value
+    // < 0 means the slot was unassigned.
+    if name == "channelInputSource" {
+        if let Some(fader) = path
+            .first()
+            .and_then(|raw| raw.checked_sub(layout.first_channel()))
+            .map(|offset| offset / 6)
+            .filter(|&fader| fader < layout.channel_count() as u32)
+        {
+            let source = value
+                .as_ref()
+                .and_then(Value::as_int)
+                .filter(|&s| s >= 0)
+                .and_then(|s| u8::try_from(s).ok());
+            return DeviceEvent::FaderAssignmentChanged {
+                fader: fader as u8,
+                source,
+            };
         }
     }
 
@@ -231,6 +274,18 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
             out.push(DeviceEvent::FaderCueChanged {
                 fader: channel_idx,
                 enabled,
+            });
+        }
+        // In a fullSync the assignment sits on the Nth CHANNEL positionally
+        // (stride 1), unlike the stride-6 incremental echo.
+        if let Some(source_i) = int_prop(child, "channelInputSource") {
+            out.push(DeviceEvent::FaderAssignmentChanged {
+                fader: channel_idx,
+                source: if source_i < 0 {
+                    None
+                } else {
+                    u8::try_from(source_i).ok()
+                },
             });
         }
         channel_idx = channel_idx.saturating_add(1);
@@ -444,19 +499,44 @@ mod tests {
     }
 
     #[test]
-    fn channel_input_source_falls_through_to_unknown_for_now() {
-        // Deferred: see module docs. Make sure we don't accidentally start
-        // shipping it as a typed event without conscious decision + capture.
+    fn decodes_encoder_signal_as_fader_touch() {
+        // encoderSignal addresses the fader by raw index (stride 1, no base).
         let l = layout();
-        let path = l.channel_path(1).unwrap();
-        let payload = encode_property_changed(&path, "channelInputSource", &Value::Int(5));
+        let payload = encode_property_changed(&[1u32], "encoderSignal", &Value::Int(1));
         let event = decode_event(&payload, &l).unwrap();
-        match event {
-            DeviceEvent::Unknown { prop_name, .. } => {
-                assert_eq!(prop_name, "channelInputSource");
+        assert_eq!(event, DeviceEvent::FaderTouched { fader: 1 });
+    }
+
+    #[test]
+    fn decodes_channel_input_source_echo_at_stride_6() {
+        // The echo for fader N sits at first_channel + 6*N, not the stride-1
+        // write path.
+        let l = layout();
+        let path = vec![l.first_channel() + 6 * 2];
+        let payload = encode_property_changed(&path, "channelInputSource", &Value::Int(7));
+        let event = decode_event(&payload, &l).unwrap();
+        assert_eq!(
+            event,
+            DeviceEvent::FaderAssignmentChanged {
+                fader: 2,
+                source: Some(7),
             }
-            other => panic!("expected Unknown for channelInputSource, got {other:?}"),
-        }
+        );
+    }
+
+    #[test]
+    fn channel_input_source_negative_value_is_unassigned() {
+        let l = layout();
+        let path = vec![l.first_channel()]; // fader 0
+        let payload = encode_property_changed(&path, "channelInputSource", &Value::Int(-1));
+        let event = decode_event(&payload, &l).unwrap();
+        assert_eq!(
+            event,
+            DeviceEvent::FaderAssignmentChanged {
+                fader: 0,
+                source: None,
+            }
+        );
     }
 
     #[test]

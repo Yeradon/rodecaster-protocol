@@ -15,7 +15,7 @@
 //! cover each layer in isolation.
 
 use rodecaster_protocol::{
-    change_frame::{decode as decode_change_frame, ChangeFrame},
+    change_frame::{decode as decode_change_frame, encode_property_changed, ChangeFrame},
     decode_event, Command, DeviceEvent, Layout, Node, Property, Value,
 };
 
@@ -206,23 +206,33 @@ fn round_trip_link_mix_emits_two_decodable_events() {
 }
 
 #[test]
-fn round_trip_assign_fader_source_surfaces_as_unknown_v02() {
+fn channel_input_source_is_asymmetric_write_stride1_echo_stride6() {
     let l = layout();
-    // Deferred: channelInputSource has an asymmetric write/echo path on
-    // firmware 1.7.3 that needs a real capture to confirm before the crate
-    // commits to a decode. Encode is honest; decode_event returns Unknown.
-    let cmd = Command::AssignFaderSource {
+    // channelInputSource is asymmetric on firmware 1.7.3: AssignFaderSource
+    // WRITES at stride 1 (channel_path), but the device ECHOES at stride 6 from
+    // first_channel. Encode stays honest (one write frame); decode resolves the
+    // echo addressing to the originating fader.
+    let write = Command::AssignFaderSource {
         fader: 0,
         source: Some(5),
-    };
-    let payloads = cmd.encode(&l).unwrap();
-    let event = decode_event(&payloads[0], &l).unwrap();
-    match event {
-        DeviceEvent::Unknown { prop_name, .. } => {
-            assert_eq!(prop_name, "channelInputSource");
-        }
-        other => panic!("expected Unknown for channelInputSource, got {other:?}"),
     }
+    .encode(&l)
+    .unwrap();
+    assert_eq!(write.len(), 1);
+
+    let echo = encode_property_changed(
+        &[l.first_channel() + 6 * 2],
+        "channelInputSource",
+        &Value::Int(5),
+    );
+    let event = decode_event(&echo, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::FaderAssignmentChanged {
+            fader: 2,
+            source: Some(5),
+        }
+    );
 }
 
 #[test]
