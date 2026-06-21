@@ -60,10 +60,14 @@ pub enum DeviceEvent {
         source: Option<u8>,
     },
 
+    /// `mixLevelWithAnchor` carries two fields, `anchor|value`. `anchor` is the
+    /// configured per-route matrix level; `value` is the live fader-tracked
+    /// level (equal to `anchor` when the wire sends a single number).
     MixLevelChanged {
         source: u8,
         mix: u8,
-        level: f32,
+        anchor: f32,
+        value: f32,
     },
     MixMuteChanged {
         source: u8,
@@ -181,8 +185,13 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
             }
             "mixLevelWithAnchor" => {
                 if let Some(Value::String(s)) = &value {
-                    if let Some(level) = parse_mix_level(s) {
-                        return DeviceEvent::MixLevelChanged { source, mix, level };
+                    if let Some((anchor, value)) = parse_mix_level(s) {
+                        return DeviceEvent::MixLevelChanged {
+                            source,
+                            mix,
+                            anchor,
+                            value,
+                        };
                     }
                 }
             }
@@ -229,11 +238,13 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     }
 }
 
-/// `mixLevelWithAnchor` wire form: `anchor|value` (or just `value`). The right
-/// side tracks fader position on the Main mix. Lifted verbatim from the
-/// server's `as_float_string`.
-fn parse_mix_level(s: &str) -> Option<f32> {
-    s.split('|').next_back()?.parse().ok()
+/// `mixLevelWithAnchor` wire form: `anchor|value` (or a single number for
+/// both). Returns `(anchor, value)`: the left/configured matrix level and the
+/// right/fader-tracked level.
+fn parse_mix_level(s: &str) -> Option<(f32, f32)> {
+    let anchor = s.split('|').next()?.parse().ok()?;
+    let value = s.split('|').next_back()?.parse().ok()?;
+    Some((anchor, value))
 }
 
 /// Walk a parsed fullSync and produce the initial DeviceEvent list. Mirrors
@@ -301,8 +312,13 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
         let source = (mix_counter / per_source) as u8;
         let mix = (mix_counter % per_source) as u8;
         if let Some(level_s) = string_prop(child, "mixLevelWithAnchor") {
-            if let Some(level) = parse_mix_level(level_s) {
-                out.push(DeviceEvent::MixLevelChanged { source, mix, level });
+            if let Some((anchor, value)) = parse_mix_level(level_s) {
+                out.push(DeviceEvent::MixLevelChanged {
+                    source,
+                    mix,
+                    anchor,
+                    value,
+                });
             }
         }
         if let Some(muted) = bool_prop(child, "mixMute") {
@@ -485,14 +501,20 @@ mod tests {
         let payload = encode_property_changed(
             &path,
             "mixLevelWithAnchor",
-            &Value::String("0.472441|0.472441".to_string()),
+            &Value::String("0.3|0.7".to_string()),
         );
         let event = decode_event(&payload, &l).unwrap();
         match event {
-            DeviceEvent::MixLevelChanged { source, mix, level } => {
+            DeviceEvent::MixLevelChanged {
+                source,
+                mix,
+                anchor,
+                value,
+            } => {
                 assert_eq!(source, 0);
                 assert_eq!(mix, 0);
-                assert!((level - 0.472441).abs() < 1e-4);
+                assert!((anchor - 0.3).abs() < 1e-4);
+                assert!((value - 0.7).abs() < 1e-4);
             }
             _ => panic!("wrong variant"),
         }
