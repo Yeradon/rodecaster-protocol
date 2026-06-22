@@ -10,6 +10,8 @@
 //! Build once per connection from a fullSync; replace the whole value on
 //! resync. Plain immutable data, `Send + Sync` automatic.
 
+use crate::juce_var::Value;
+use crate::names::DeviceModel;
 use crate::valuetree::Node;
 
 /// Mix destinations per source in the RODECaster Pro II / Duo mix matrix
@@ -26,6 +28,7 @@ pub const MIX_COUNT_PER_SOURCE: u8 = 13;
 /// discovered, not hardcoded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
+    model: DeviceModel,
     physical_interface_idx: u32,
     first_fader_in_phys: u32,
     fader_count: u8,
@@ -41,6 +44,10 @@ impl Layout {
     /// Fails loudly on missing required nodes so a future firmware layout
     /// change surfaces immediately rather than silently misrouting.
     pub fn from_full_sync(root: &Node) -> Result<Layout, BuildError> {
+        // Device model from the SYSTEM node (boardType primary, systemName
+        // fallback). Absent on synthetic trees and old firmware -> Pro II.
+        let model = detect_model(root);
+
         // PHYSICALINTERFACE under root, with FADER children inside it.
         let physical_interface_idx = position_of_named_child(root, "PHYSICALINTERFACE")
             .ok_or(BuildError::MissingNode("PHYSICALINTERFACE under root"))?;
@@ -76,6 +83,7 @@ impl Layout {
         })?;
 
         Ok(Layout {
+            model,
             physical_interface_idx,
             first_fader_in_phys,
             fader_count,
@@ -84,6 +92,12 @@ impl Layout {
             first_mix,
             source_count,
         })
+    }
+
+    /// Which RODECaster this layout was discovered from. Selects the per-model
+    /// [`crate::Fader`] mapping when resolving typed commands and events.
+    pub fn model(&self) -> DeviceModel {
+        self.model
     }
 
     pub fn physical_interface_idx(&self) -> u32 {
@@ -198,6 +212,28 @@ impl Layout {
     }
 }
 
+/// Read the `SYSTEM` node's `boardType` / `systemName` and resolve the model.
+/// Missing `SYSTEM` (synthetic trees, partial captures) -> Pro II default.
+fn detect_model(root: &Node) -> DeviceModel {
+    let sys = root.children.iter().find(|c| c.name == "SYSTEM");
+    let board_type = sys.and_then(|s| {
+        s.properties
+            .iter()
+            .find(|p| p.name == "boardType")
+            .and_then(|p| p.value.as_int())
+    });
+    let system_name = sys.and_then(|s| {
+        s.properties
+            .iter()
+            .find(|p| p.name == "systemName")
+            .and_then(|p| match &p.value {
+                Value::String(name) => Some(name.as_str()),
+                _ => None,
+            })
+    });
+    DeviceModel::detect(board_type, system_name)
+}
+
 fn position_of_named_child(parent: &Node, name: &str) -> Option<u32> {
     parent
         .children
@@ -256,6 +292,7 @@ impl std::error::Error for BuildError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::valuetree::Property;
 
     fn node(name: &str) -> Node {
         Node {
@@ -429,5 +466,62 @@ mod tests {
             BuildError::ShapeMismatch { what, .. } => assert_eq!(what, "MIX"),
             other => panic!("expected ShapeMismatch, got {other:?}"),
         }
+    }
+
+    /// Build a SYSTEM node carrying the given board type, prepended to an
+    /// otherwise-valid synthetic tree so `from_full_sync` succeeds.
+    fn tree_with_system(props: Vec<Property>) -> Node {
+        let phys = node_with_children("PHYSICALINTERFACE", vec![node("FADER")]);
+        let system = Node {
+            name: "SYSTEM".to_string(),
+            properties: props,
+            children: vec![],
+        };
+        let mut children = vec![system, phys, node("CHANNEL")];
+        for _ in 0..13 {
+            children.push(node("MIX"));
+        }
+        node_with_children("DEVICE", children)
+    }
+
+    #[test]
+    fn model_defaults_to_pro2_without_system_node() {
+        // The synthetic tree has no SYSTEM node.
+        let layout = Layout::from_full_sync(&synthetic_tree()).unwrap();
+        assert_eq!(layout.model(), DeviceModel::Pro2);
+    }
+
+    #[test]
+    fn model_reads_board_type_from_system() {
+        let pro2 = tree_with_system(vec![Property {
+            name: "boardType".to_string(),
+            value: Value::Int(0),
+        }]);
+        assert_eq!(
+            Layout::from_full_sync(&pro2).unwrap().model(),
+            DeviceModel::Pro2
+        );
+
+        let duo = tree_with_system(vec![Property {
+            name: "boardType".to_string(),
+            value: Value::Int(1),
+        }]);
+        assert_eq!(
+            Layout::from_full_sync(&duo).unwrap().model(),
+            DeviceModel::Duo
+        );
+    }
+
+    #[test]
+    fn model_falls_back_to_system_name() {
+        // No boardType -> systemName decides.
+        let duo = tree_with_system(vec![Property {
+            name: "systemName".to_string(),
+            value: Value::String("RODECaster Duo".to_string()),
+        }]);
+        assert_eq!(
+            Layout::from_full_sync(&duo).unwrap().model(),
+            DeviceModel::Duo
+        );
     }
 }

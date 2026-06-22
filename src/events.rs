@@ -23,6 +23,7 @@
 use crate::change_frame::{decode as decode_frame, ChangeFrame};
 use crate::juce_var::Value;
 use crate::layout::Layout;
+use crate::names::{Fader, MixOutput, Source};
 use crate::valuetree::Node;
 
 /// Typed event decoded from one wire payload.
@@ -35,53 +36,53 @@ pub enum DeviceEvent {
     InitialState(Vec<DeviceEvent>),
 
     FaderMuteChanged {
-        fader: u8,
+        fader: Fader,
         muted: bool,
     },
     FaderCueChanged {
-        fader: u8,
+        fader: Fader,
         enabled: bool,
     },
     /// Virtual fader level (0..127 MIDI scale).
     FaderLevelChanged {
-        fader: u8,
+        fader: Fader,
         level: u8,
     },
     /// A fader strip was touched (the device's `encoderSignal`). The wire
     /// addresses it by raw fader index (single-level path, no base offset).
     FaderTouched {
-        fader: u8,
+        fader: Fader,
     },
     /// A fader's input-source assignment changed (`channelInputSource` echo,
     /// resolved at the stride-6 echo addressing — see module docs). `source`
     /// is `None` when the slot was unassigned (wire value < 0).
     FaderAssignmentChanged {
-        fader: u8,
-        source: Option<u8>,
+        fader: Fader,
+        source: Option<Source>,
     },
 
     /// `mixLevelWithAnchor` carries two fields, `anchor|value`. `anchor` is the
     /// configured per-route matrix level; `value` is the live fader-tracked
     /// level (equal to `anchor` when the wire sends a single number).
     MixLevelChanged {
-        source: u8,
-        mix: u8,
+        source: Source,
+        mix: MixOutput,
         anchor: f32,
         value: f32,
     },
     MixMuteChanged {
-        source: u8,
-        mix: u8,
+        source: Source,
+        mix: MixOutput,
         muted: bool,
     },
     MixLinkChanged {
-        source: u8,
-        mix: u8,
+        source: Source,
+        mix: MixOutput,
         linked: bool,
     },
     MixDisabledChanged {
-        source: u8,
-        mix: u8,
+        source: Source,
+        mix: MixOutput,
         disabled: bool,
     },
 
@@ -125,8 +126,15 @@ fn decode_change_frame(frame: ChangeFrame, layout: &Layout) -> DeviceEvent {
 }
 
 fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layout) -> DeviceEvent {
-    // CHANNEL-addressed properties (single-level path).
-    if let Some(fader) = layout.channel_index_from_path(path) {
+    let model = layout.model();
+
+    // CHANNEL-addressed properties (single-level path). A path that resolves to
+    // a channel with no named fader (the master strip, index 9) falls through
+    // to Unknown rather than matching here.
+    if let Some(fader) = layout
+        .channel_index_from_path(path)
+        .and_then(|idx| Fader::from_index(model, idx))
+    {
         match name {
             "channelOutputMute" => {
                 if let Some(Value::Bool(muted)) = value {
@@ -146,7 +154,10 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     }
 
     // FADER-addressed properties (two-level path through PHYSICALINTERFACE).
-    if let Some(fader) = layout.fader_index_from_path(path) {
+    if let Some(fader) = layout
+        .fader_index_from_path(path)
+        .and_then(|idx| Fader::from_index(model, idx))
+    {
         if name == "faderLevel" {
             if let Some(v) = &value {
                 if let Some(level_i64) = v.as_int() {
@@ -158,7 +169,10 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     }
 
     // MIX-cell-addressed properties (single-level path).
-    if let Some((source, mix)) = layout.mix_cell_from_path(path) {
+    if let Some((source, mix)) = layout
+        .mix_cell_from_path(path)
+        .and_then(|(s, m)| Some((Source::from_protocol(s)?, MixOutput::from_protocol(m)?)))
+    {
         match name {
             "mixMute" => {
                 if let Some(Value::Bool(muted)) = value {
@@ -204,7 +218,9 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     if name == "encoderSignal" {
         if let Some(&raw) = path.first() {
             if raw < layout.fader_count() as u32 {
-                return DeviceEvent::FaderTouched { fader: raw as u8 };
+                if let Some(fader) = Fader::from_index(model, raw as u8) {
+                    return DeviceEvent::FaderTouched { fader };
+                }
             }
         }
     }
@@ -217,17 +233,16 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
             .first()
             .and_then(|raw| raw.checked_sub(layout.first_channel()))
             .map(|offset| offset / 6)
-            .filter(|&fader| fader < layout.channel_count() as u32)
+            .filter(|&idx| idx < layout.channel_count() as u32)
+            .and_then(|idx| Fader::from_index(model, idx as u8))
         {
             let source = value
                 .as_ref()
                 .and_then(Value::as_int)
                 .filter(|&s| s >= 0)
-                .and_then(|s| u8::try_from(s).ok());
-            return DeviceEvent::FaderAssignmentChanged {
-                fader: fader as u8,
-                source,
-            };
+                .and_then(|s| u8::try_from(s).ok())
+                .and_then(Source::from_protocol);
+            return DeviceEvent::FaderAssignmentChanged { fader, source };
         }
     }
 
@@ -251,6 +266,7 @@ fn parse_mix_level(s: &str) -> Option<(f32, f32)> {
 /// the server's `extract_initial_state`, layout-driven (no hardcoded counts).
 pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
     let mut out = Vec::new();
+    let model = layout.model();
 
     // 1. PHYSICALINTERFACE -> FADER initial levels (physical strips only).
     if let Some(phys) = root.children.iter().find(|n| n.name == "PHYSICALINTERFACE") {
@@ -259,9 +275,11 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
             if child.name != "FADER" {
                 continue;
             }
-            if let Some(level) = int_prop(child, "faderLevel") {
+            if let (Some(fader), Some(level)) =
+                (Fader::from_index(model, fader_idx), int_prop(child, "faderLevel"))
+            {
                 out.push(DeviceEvent::FaderLevelChanged {
-                    fader: fader_idx,
+                    fader,
                     level: level.clamp(0, 127) as u8,
                 });
             }
@@ -269,48 +287,54 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
         }
     }
 
-    // 2. CHANNEL initial mute/cue (one per strip, including virtuals).
+    // 2. CHANNEL initial mute/cue (one per strip, including virtuals). The
+    // master strip (index 9) has no named fader, so its properties are skipped.
     let mut channel_idx: u8 = 0;
     for child in &root.children {
         if child.name != "CHANNEL" {
             continue;
         }
-        if let Some(muted) = bool_prop(child, "channelOutputMute") {
-            out.push(DeviceEvent::FaderMuteChanged {
-                fader: channel_idx,
-                muted,
-            });
-        }
-        if let Some(enabled) = bool_prop(child, "channelCueEnable") {
-            out.push(DeviceEvent::FaderCueChanged {
-                fader: channel_idx,
-                enabled,
-            });
-        }
-        // In a fullSync the assignment sits on the Nth CHANNEL positionally
-        // (stride 1), unlike the stride-6 incremental echo.
-        if let Some(source_i) = int_prop(child, "channelInputSource") {
-            out.push(DeviceEvent::FaderAssignmentChanged {
-                fader: channel_idx,
-                source: if source_i < 0 {
-                    None
-                } else {
-                    u8::try_from(source_i).ok()
-                },
-            });
+        if let Some(fader) = Fader::from_index(model, channel_idx) {
+            if let Some(muted) = bool_prop(child, "channelOutputMute") {
+                out.push(DeviceEvent::FaderMuteChanged { fader, muted });
+            }
+            if let Some(enabled) = bool_prop(child, "channelCueEnable") {
+                out.push(DeviceEvent::FaderCueChanged { fader, enabled });
+            }
+            // In a fullSync the assignment sits on the Nth CHANNEL positionally
+            // (stride 1), unlike the stride-6 incremental echo.
+            if let Some(source_i) = int_prop(child, "channelInputSource") {
+                out.push(DeviceEvent::FaderAssignmentChanged {
+                    fader,
+                    source: if source_i < 0 {
+                        None
+                    } else {
+                        u8::try_from(source_i).ok().and_then(Source::from_protocol)
+                    },
+                });
+            }
         }
         channel_idx = channel_idx.saturating_add(1);
     }
 
-    // 3. MIX cells initial values. Source-major: cell N has source = N/13, mix = N%13.
+    // 3. MIX cells initial values. Source-major: cell N has source = N/13, mix
+    // = N%13. Cells whose source ordinal falls past the named vocabulary (e.g.
+    // a Duo's rcSync RCV placeholder block) don't map and are skipped; the
+    // counter still advances so later cells keep their source-major position.
     let mut mix_counter: u32 = 0;
     let per_source = layout.mix_count_per_source() as u32;
     for child in &root.children {
         if child.name != "MIX" {
             continue;
         }
-        let source = (mix_counter / per_source) as u8;
-        let mix = (mix_counter % per_source) as u8;
+        let source_idx = (mix_counter / per_source) as u8;
+        let mix_idx = (mix_counter % per_source) as u8;
+        mix_counter += 1;
+        let (source, mix) =
+            match (Source::from_protocol(source_idx), MixOutput::from_protocol(mix_idx)) {
+                (Some(s), Some(m)) => (s, m),
+                _ => continue,
+            };
         if let Some(level_s) = string_prop(child, "mixLevelWithAnchor") {
             if let Some((anchor, value)) = parse_mix_level(level_s) {
                 out.push(DeviceEvent::MixLevelChanged {
@@ -338,7 +362,6 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
                 disabled,
             });
         }
-        mix_counter += 1;
     }
 
     out
@@ -427,7 +450,7 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::FaderMuteChanged {
-                fader: 2,
+                fader: Fader::Physical3,
                 muted: true,
             }
         );
@@ -442,7 +465,7 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::FaderCueChanged {
-                fader: 0,
+                fader: Fader::Physical1,
                 enabled: false,
             }
         );
@@ -457,7 +480,7 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::FaderLevelChanged {
-                fader: 1,
+                fader: Fader::Physical2,
                 level: 99,
             }
         );
@@ -472,7 +495,7 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::FaderLevelChanged {
-                fader: 0,
+                fader: Fader::Physical1,
                 level: 127,
             }
         );
@@ -487,8 +510,8 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::MixDisabledChanged {
-                source: 1,
-                mix: 5,
+                source: Source::Combo2,
+                mix: MixOutput::Recording,
                 disabled: true,
             }
         );
@@ -511,8 +534,8 @@ mod tests {
                 anchor,
                 value,
             } => {
-                assert_eq!(source, 0);
-                assert_eq!(mix, 0);
+                assert_eq!(source, Source::Combo1);
+                assert_eq!(mix, MixOutput::Headphone1);
                 assert!((anchor - 0.3).abs() < 1e-4);
                 assert!((value - 0.7).abs() < 1e-4);
             }
@@ -526,7 +549,7 @@ mod tests {
         let l = layout();
         let payload = encode_property_changed(&[1u32], "encoderSignal", &Value::Int(1));
         let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(event, DeviceEvent::FaderTouched { fader: 1 });
+        assert_eq!(event, DeviceEvent::FaderTouched { fader: Fader::Physical2 });
     }
 
     #[test]
@@ -540,8 +563,8 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::FaderAssignmentChanged {
-                fader: 2,
-                source: Some(7),
+                fader: Fader::Physical3,
+                source: Some(Source::Usb1),
             }
         );
     }
@@ -555,7 +578,7 @@ mod tests {
         assert_eq!(
             event,
             DeviceEvent::FaderAssignmentChanged {
-                fader: 0,
+                fader: Fader::Physical1,
                 source: None,
             }
         );
@@ -632,42 +655,42 @@ mod tests {
         assert_eq!(
             events[0],
             DeviceEvent::FaderLevelChanged {
-                fader: 0,
+                fader: Fader::Physical1,
                 level: 64,
             }
         );
         assert_eq!(
             events[1],
             DeviceEvent::FaderLevelChanged {
-                fader: 1,
+                fader: Fader::Physical2,
                 level: 100,
             }
         );
         assert_eq!(
             events[2],
             DeviceEvent::FaderMuteChanged {
-                fader: 0,
+                fader: Fader::Physical1,
                 muted: false,
             }
         );
         assert_eq!(
             events[3],
             DeviceEvent::FaderCueChanged {
-                fader: 0,
+                fader: Fader::Physical1,
                 enabled: true,
             }
         );
         assert_eq!(
             events[4],
             DeviceEvent::FaderMuteChanged {
-                fader: 1,
+                fader: Fader::Physical2,
                 muted: true,
             }
         );
         // Last few should be mix levels
         if let DeviceEvent::MixLevelChanged { source, mix, .. } = events[17] {
-            assert_eq!(source, 0);
-            assert_eq!(mix, 12);
+            assert_eq!(source, Source::Combo1);
+            assert_eq!(mix, MixOutput::CallMe3);
         } else {
             panic!("expected MixLevelChanged at end");
         }

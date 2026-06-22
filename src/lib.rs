@@ -54,6 +54,7 @@ pub mod events;
 pub mod frame;
 pub mod juce_var;
 pub mod layout;
+pub mod names;
 pub mod valuetree;
 
 pub use change_frame::ChangeFrame;
@@ -63,6 +64,7 @@ pub use events::{decode_event, DeviceEvent};
 pub use frame::{frame_payload, scan_frame, FrameScan, Packet, MAGIC_HEADER};
 pub use juce_var::{read_value, Reader, Value};
 pub use layout::Layout;
+pub use names::{DeviceModel, Fader, MixOutput, Source};
 pub use valuetree::{parse_valuetree, Node, Property};
 
 /// Compile-time guarantee that the public types stay `Send + Sync` so
@@ -79,4 +81,8 @@ const _: () = {
     assert_send_sync::<Node>();
     assert_send_sync::<Property>();
     assert_send_sync::<Packet>();
+    assert_send_sync::<DeviceModel>();
+    assert_send_sync::<Source>();
+    assert_send_sync::<MixOutput>();
+    assert_send_sync::<Fader>();
 };

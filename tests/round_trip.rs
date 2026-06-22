@@ -16,7 +16,7 @@
 
 use rodecaster_protocol::{
     change_frame::{decode as decode_change_frame, encode_property_changed, ChangeFrame},
-    decode_event, Command, DeviceEvent, Layout, Node, Property, Value,
+    decode_event, Command, DeviceEvent, Fader, Layout, MixOutput, Node, Property, Source, Value,
 };
 
 fn n(name: &str) -> Node {
@@ -105,7 +105,7 @@ fn layout() -> Layout {
 fn round_trip_set_fader_mute() {
     let l = layout();
     let cmd = Command::SetFaderMute {
-        fader: 1,
+        fader: Fader::Physical2,
         mute: true,
     };
     let payloads = cmd.encode(&l).unwrap();
@@ -115,7 +115,7 @@ fn round_trip_set_fader_mute() {
     assert_eq!(
         event,
         DeviceEvent::FaderMuteChanged {
-            fader: 1,
+            fader: Fader::Physical2,
             muted: true,
         }
     );
@@ -125,7 +125,7 @@ fn round_trip_set_fader_mute() {
 fn round_trip_set_fader_cue() {
     let l = layout();
     let cmd = Command::SetFaderCue {
-        fader: 0,
+        fader: Fader::Physical1,
         enable: true,
     };
     let payloads = cmd.encode(&l).unwrap();
@@ -133,7 +133,7 @@ fn round_trip_set_fader_cue() {
     assert_eq!(
         event,
         DeviceEvent::FaderCueChanged {
-            fader: 0,
+            fader: Fader::Physical1,
             enabled: true,
         }
     );
@@ -143,7 +143,7 @@ fn round_trip_set_fader_cue() {
 fn round_trip_set_fader_level_through_two_level_path() {
     let l = layout();
     let cmd = Command::SetFaderLevel {
-        fader: 2,
+        fader: Fader::Physical3,
         level: 100,
     };
     let payloads = cmd.encode(&l).unwrap();
@@ -151,7 +151,7 @@ fn round_trip_set_fader_level_through_two_level_path() {
     assert_eq!(
         event,
         DeviceEvent::FaderLevelChanged {
-            fader: 2,
+            fader: Fader::Physical3,
             level: 100,
         }
     );
@@ -161,8 +161,8 @@ fn round_trip_set_fader_level_through_two_level_path() {
 fn round_trip_set_mix_disabled() {
     let l = layout();
     let cmd = Command::SetMixDisabled {
-        source: 1,
-        mix: 7,
+        source: Source::Combo2,
+        mix: MixOutput::Usb1,
         disabled: true,
     };
     let payloads = cmd.encode(&l).unwrap();
@@ -170,8 +170,8 @@ fn round_trip_set_mix_disabled() {
     assert_eq!(
         event,
         DeviceEvent::MixDisabledChanged {
-            source: 1,
-            mix: 7,
+            source: Source::Combo2,
+            mix: MixOutput::Usb1,
             disabled: true,
         }
     );
@@ -180,7 +180,10 @@ fn round_trip_set_mix_disabled() {
 #[test]
 fn round_trip_link_mix_emits_two_decodable_events() {
     let l = layout();
-    let cmd = Command::LinkMix { source: 0, mix: 4 };
+    let cmd = Command::LinkMix {
+        source: Source::Combo1,
+        mix: MixOutput::Speaker,
+    };
     let payloads = cmd.encode(&l).unwrap();
     assert_eq!(payloads.len(), 2);
 
@@ -189,8 +192,8 @@ fn round_trip_link_mix_emits_two_decodable_events() {
     assert_eq!(
         first,
         DeviceEvent::MixDisabledChanged {
-            source: 0,
-            mix: 4,
+            source: Source::Combo1,
+            mix: MixOutput::Speaker,
             disabled: false,
         }
     );
@@ -213,8 +216,8 @@ fn channel_input_source_is_asymmetric_write_stride1_echo_stride6() {
     // first_channel. Encode stays honest (one write frame); decode resolves the
     // echo addressing to the originating fader.
     let write = Command::AssignFaderSource {
-        fader: 0,
-        source: Some(5),
+        fader: Fader::Physical1,
+        source: Some(Source::Combo2_3),
     }
     .encode(&l)
     .unwrap();
@@ -229,8 +232,8 @@ fn channel_input_source_is_asymmetric_write_stride1_echo_stride6() {
     assert_eq!(
         event,
         DeviceEvent::FaderAssignmentChanged {
-            fader: 2,
-            source: Some(5),
+            fader: Fader::Physical3,
+            source: Some(Source::Combo2_3),
         }
     );
 }
@@ -259,21 +262,21 @@ fn full_sync_path_yields_initial_state_for_synthetic_tree() {
     assert_eq!(
         initial[0],
         DeviceEvent::FaderLevelChanged {
-            fader: 0,
+            fader: Fader::Physical1,
             level: 50,
         }
     );
     assert_eq!(
         initial[1],
         DeviceEvent::FaderLevelChanged {
-            fader: 1,
+            fader: Fader::Physical2,
             level: 60,
         }
     );
     assert_eq!(
         initial[2],
         DeviceEvent::FaderLevelChanged {
-            fader: 2,
+            fader: Fader::Physical3,
             level: 70,
         }
     );
@@ -293,7 +296,7 @@ fn full_round_trip_through_transport_packet() {
     use rodecaster_protocol::Packet;
     let l = layout();
     let cmd = Command::SetFaderMute {
-        fader: 0,
+        fader: Fader::Physical1,
         mute: true,
     };
     let payloads = cmd.encode(&l).unwrap();
@@ -310,7 +313,7 @@ fn full_round_trip_through_transport_packet() {
     assert_eq!(
         event,
         DeviceEvent::FaderMuteChanged {
-            fader: 0,
+            fader: Fader::Physical1,
             muted: true,
         }
     );
@@ -354,7 +357,7 @@ fn round_trip_addresses_track_layout_not_constants() {
     let layout_b = Layout::from_full_sync(&nc("DEVICE", b_children)).unwrap();
 
     let cmd = Command::SetFaderMute {
-        fader: 0,
+        fader: Fader::Physical1,
         mute: true,
     };
 
@@ -366,14 +369,14 @@ fn round_trip_addresses_track_layout_not_constants() {
     assert_eq!(
         decode_event(&a[0], &layout_a).unwrap(),
         DeviceEvent::FaderMuteChanged {
-            fader: 0,
+            fader: Fader::Physical1,
             muted: true,
         }
     );
     assert_eq!(
         decode_event(&b[0], &layout_b).unwrap(),
         DeviceEvent::FaderMuteChanged {
-            fader: 0,
+            fader: Fader::Physical1,
             muted: true,
         }
     );
@@ -384,7 +387,7 @@ fn round_trip_addresses_track_layout_not_constants() {
     assert_ne!(
         cross,
         DeviceEvent::FaderMuteChanged {
-            fader: 0,
+            fader: Fader::Physical1,
             muted: true,
         },
         "different Layout must NOT resolve A's path the same way"

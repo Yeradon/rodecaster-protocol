@@ -13,6 +13,7 @@
 use crate::change_frame;
 use crate::juce_var::Value;
 use crate::layout::Layout;
+use crate::names::{DeviceModel, Fader, MixOutput, Source};
 
 /// Binary "request" blob the device expects for `mixLinkRequest` /
 /// `mixUnlinkRequest`. Verified verbatim against the server's existing
@@ -60,43 +61,48 @@ const CALLME_MIX_PATH_OFFSET: u32 = 4;
 
 /// Outgoing Rodecaster command.
 ///
-/// Each variant addresses a logical entity (fader strip, mix matrix cell);
-/// [`Command::encode`] resolves the entity through the [`Layout`] into the
-/// concrete wire path, so this enum has zero knowledge of `0x1C`, `+62`, or
-/// any other firmware-specific position constant.
+/// Each variant addresses a logical entity by *name* ([`Fader`], [`Source`],
+/// [`MixOutput`]); [`Command::encode`] resolves the name to a wire index
+/// through the [`Layout`] (and its [`DeviceModel`]), so this enum has zero
+/// knowledge of `0x1C`, `+62`, or any other firmware-specific position
+/// constant, and callers never pass a bare index.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
     /// Set the output mute on a fader strip.
-    SetFaderMute { fader: u8, mute: bool },
+    SetFaderMute { fader: Fader, mute: bool },
     /// Set the cue (pre-fader-listen) enable on a fader strip.
-    SetFaderCue { fader: u8, enable: bool },
+    SetFaderCue { fader: Fader, enable: bool },
     /// Set a virtual fader's level (0..127 MIDI scale).
     /// Physical fader levels come from hardware over MIDI/UART, not this path.
-    SetFaderLevel { fader: u8, level: u8 },
+    SetFaderLevel { fader: Fader, level: u8 },
     /// Assign (or clear, with `None`) the input source for a fader strip.
-    AssignFaderSource { fader: u8, source: Option<u8> },
+    AssignFaderSource { fader: Fader, source: Option<Source> },
     /// Enable or disable a routing matrix cell.
-    SetMixDisabled { source: u8, mix: u8, disabled: bool },
+    SetMixDisabled {
+        source: Source,
+        mix: MixOutput,
+        disabled: bool,
+    },
     /// Link a routing matrix cell. The device requires two packets in order:
     /// enable first (`mixDisabled=false`), then `mixLinkRequest`. `encode`
     /// returns both.
-    LinkMix { source: u8, mix: u8 },
+    LinkMix { source: Source, mix: MixOutput },
     /// Unlink a routing matrix cell.
-    UnlinkMix { source: u8, mix: u8 },
+    UnlinkMix { source: Source, mix: MixOutput },
     /// Wake the device display. A fixed, layout-independent message; see
     /// [`SCREEN_TOUCHED_FRAME`].
     ScreenTouched,
     /// Request the device power off.
     PowerOff,
-    /// Link a CallMe return channel into a mix. `source` is the device
-    /// protocol source id of the CallMe channel (16/17/18 on firmware 1.7.3).
-    /// CallMe uses a dedicated request address outside the mix matrix, so this
-    /// sends a single `mixLinkRequest` (no preceding enable, unlike
-    /// [`Command::LinkMix`]).
-    LinkCallMe { source: u8, mix: u8 },
+    /// Link a CallMe return channel into a mix. `source` must be a CallMe
+    /// source ([`Source::CallMe1`]..=[`Source::CallMe3`]); on firmware where
+    /// CallMe sits outside the mix matrix it is addressed by a dedicated
+    /// request path, so this sends a single `mixLinkRequest` (no preceding
+    /// enable, unlike [`Command::LinkMix`]).
+    LinkCallMe { source: Source, mix: MixOutput },
     /// Unlink a CallMe return channel from a mix. See [`Command::LinkCallMe`].
-    UnlinkCallMe { source: u8, mix: u8 },
+    UnlinkCallMe { source: Source, mix: MixOutput },
 }
 
 impl Command {
@@ -108,7 +114,7 @@ impl Command {
     pub fn encode(&self, layout: &Layout) -> Result<Vec<Vec<u8>>, EncodeError> {
         match self {
             Command::SetFaderMute { fader, mute } => {
-                let path = channel_path(layout, *fader)?;
+                let path = channel_path(layout, fader_index(layout, *fader)?)?;
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
                     "channelOutputMute",
@@ -116,7 +122,7 @@ impl Command {
                 )])
             }
             Command::SetFaderCue { fader, enable } => {
-                let path = channel_path(layout, *fader)?;
+                let path = channel_path(layout, fader_index(layout, *fader)?)?;
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
                     "channelCueEnable",
@@ -124,7 +130,7 @@ impl Command {
                 )])
             }
             Command::SetFaderLevel { fader, level } => {
-                let path = fader_path(layout, *fader)?;
+                let path = fader_path(layout, fader_index(layout, *fader)?)?;
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
                     "faderLevel",
@@ -132,9 +138,9 @@ impl Command {
                 )])
             }
             Command::AssignFaderSource { fader, source } => {
-                let path = channel_path(layout, *fader)?;
+                let path = channel_path(layout, fader_index(layout, *fader)?)?;
                 let source_value = source
-                    .map(|s| s as i64)
+                    .map(|s| s.to_protocol() as i64)
                     .unwrap_or(CHANNEL_INPUT_SOURCE_UNASSIGNED);
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
@@ -200,34 +206,46 @@ impl Command {
     }
 }
 
-/// Single-level request path for a CallMe routing cell. See
-/// [`CALLME_MIX_PATH_OFFSET`].
-fn callme_request_path(source: u8, mix: u8) -> Vec<u32> {
-    vec![((source as u32) << 8) | (CALLME_MIX_PATH_OFFSET + mix as u32)]
+/// Resolve a named fader strip to its wire fader/channel index on the layout's
+/// device model. `Err(FaderNotOnModel)` if the strip does not exist there
+/// (e.g. `Physical6` on a Duo).
+fn fader_index(layout: &Layout, fader: Fader) -> Result<u8, EncodeError> {
+    fader
+        .to_index(layout.model())
+        .ok_or(EncodeError::FaderNotOnModel {
+            fader,
+            model: layout.model(),
+        })
 }
 
-fn channel_path(layout: &Layout, fader: u8) -> Result<Vec<u32>, EncodeError> {
-    layout.channel_path(fader).ok_or(EncodeError::OutOfRange {
+/// Single-level request path for a CallMe routing cell. See
+/// [`CALLME_MIX_PATH_OFFSET`].
+fn callme_request_path(source: Source, mix: MixOutput) -> Vec<u32> {
+    vec![((source.to_protocol() as u32) << 8) | (CALLME_MIX_PATH_OFFSET + mix.to_protocol() as u32)]
+}
+
+fn channel_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
+    layout.channel_path(idx).ok_or(EncodeError::OutOfRange {
         what: "fader",
-        index: fader as u32,
+        index: idx as u32,
         bound: layout.channel_count() as u32,
     })
 }
 
-fn fader_path(layout: &Layout, fader: u8) -> Result<Vec<u32>, EncodeError> {
-    layout.fader_path(fader).ok_or(EncodeError::OutOfRange {
+fn fader_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
+    layout.fader_path(idx).ok_or(EncodeError::OutOfRange {
         what: "fader",
-        index: fader as u32,
+        index: idx as u32,
         bound: layout.fader_count() as u32,
     })
 }
 
-fn mix_path(layout: &Layout, source: u8, mix: u8) -> Result<Vec<u32>, EncodeError> {
+fn mix_path(layout: &Layout, source: Source, mix: MixOutput) -> Result<Vec<u32>, EncodeError> {
     layout
-        .mix_cell_path(source, mix)
+        .mix_cell_path(source.to_protocol(), mix.to_protocol())
         .ok_or(EncodeError::MixCellOutOfRange {
-            source,
-            mix,
+            source: source.to_protocol(),
+            mix: mix.to_protocol(),
             source_bound: layout.source_count(),
             mix_bound: layout.mix_count_per_source(),
         })
@@ -246,6 +264,12 @@ pub enum EncodeError {
         source_bound: u8,
         mix_bound: u8,
     },
+    /// The named fader strip does not exist on this device model (e.g.
+    /// `Physical6` on a Duo, or `Virtual4` on a Pro II).
+    FaderNotOnModel {
+        fader: Fader,
+        model: DeviceModel,
+    },
 }
 
 impl std::fmt::Display for EncodeError {
@@ -253,6 +277,9 @@ impl std::fmt::Display for EncodeError {
         match self {
             EncodeError::OutOfRange { what, index, bound } => {
                 write!(f, "{what} index {index} out of range (bound {bound})")
+            }
+            EncodeError::FaderNotOnModel { fader, model } => {
+                write!(f, "fader {fader} does not exist on {model}")
             }
             EncodeError::MixCellOutOfRange {
                 source,
@@ -316,8 +343,9 @@ mod tests {
     #[test]
     fn set_fader_mute_encodes_juce_property_changed() {
         let l = layout();
+        // Pro II model (no SYSTEM node): Physical2 -> fader index 1.
         let bytes = Command::SetFaderMute {
-            fader: 1,
+            fader: Fader::Physical2,
             mute: true,
         }
         .encode(&l)
@@ -328,7 +356,6 @@ mod tests {
         let frame = decode(&bytes[0]).expect("decodes");
         match frame {
             ChangeFrame::PropertyChanged { path, name, value } => {
-                // CHANNEL at root index 3 (= first_channel=3 + fader=1)
                 assert_eq!(path, l.channel_path(1).unwrap());
                 assert_eq!(name, "channelOutputMute");
                 assert_eq!(value, Value::Bool(true));
@@ -341,7 +368,7 @@ mod tests {
     fn set_fader_level_uses_two_level_path_through_physical_interface() {
         let l = layout();
         let bytes = Command::SetFaderLevel {
-            fader: 2,
+            fader: Fader::Physical3,
             level: 75,
         }
         .encode(&l)
@@ -349,7 +376,7 @@ mod tests {
         let frame = decode(&bytes[0]).unwrap();
         match frame {
             ChangeFrame::PropertyChanged { path, name, value } => {
-                // [physical_interface_idx=1, first_fader_in_phys=1 + 2 = 3]
+                // Physical3 -> index 2; [physical_interface_idx=1, first_fader_in_phys=1 + 2 = 3]
                 assert_eq!(path, vec![1, 3]);
                 assert_eq!(name, "faderLevel");
                 assert_eq!(value, Value::Int(75));
@@ -363,8 +390,8 @@ mod tests {
         let l = layout();
 
         let some = Command::AssignFaderSource {
-            fader: 0,
-            source: Some(5),
+            fader: Fader::Physical1,
+            source: Some(Source::Combo2_3), // protocol index 5
         }
         .encode(&l)
         .unwrap();
@@ -378,7 +405,7 @@ mod tests {
         }
 
         let none = Command::AssignFaderSource {
-            fader: 0,
+            fader: Fader::Physical1,
             source: None,
         }
         .encode(&l)
@@ -397,8 +424,8 @@ mod tests {
     fn set_mix_disabled_addresses_source_major_cell() {
         let l = layout();
         let bytes = Command::SetMixDisabled {
-            source: 1,
-            mix: 5,
+            source: Source::Combo2,     // protocol index 1
+            mix: MixOutput::Recording,  // protocol index 5
             disabled: true,
         }
         .encode(&l)
@@ -417,7 +444,12 @@ mod tests {
     #[test]
     fn link_mix_emits_enable_then_link_request_in_order() {
         let l = layout();
-        let bytes = Command::LinkMix { source: 0, mix: 3 }.encode(&l).unwrap();
+        let bytes = Command::LinkMix {
+            source: Source::Combo1,
+            mix: MixOutput::Headphone4,
+        }
+        .encode(&l)
+        .unwrap();
         assert_eq!(bytes.len(), 2, "link emits two payloads");
 
         let first = decode(&bytes[0]).unwrap();
@@ -442,7 +474,12 @@ mod tests {
     #[test]
     fn unlink_mix_emits_single_unlink_request() {
         let l = layout();
-        let bytes = Command::UnlinkMix { source: 0, mix: 3 }.encode(&l).unwrap();
+        let bytes = Command::UnlinkMix {
+            source: Source::Combo1,
+            mix: MixOutput::Headphone4,
+        }
+        .encode(&l)
+        .unwrap();
         assert_eq!(bytes.len(), 1);
         let frame = decode(&bytes[0]).unwrap();
         match frame {
@@ -457,8 +494,10 @@ mod tests {
     #[test]
     fn out_of_range_fader_returns_error_not_panic() {
         let l = layout();
+        // Virtual1 is a valid Pro II strip (index 6) but the synthetic layout
+        // only has 3 channels, so it resolves past the discovered count.
         let err = Command::SetFaderMute {
-            fader: 99,
+            fader: Fader::Virtual1,
             mute: true,
         }
         .encode(&l)
@@ -466,7 +505,26 @@ mod tests {
         match err {
             EncodeError::OutOfRange { what, index, .. } => {
                 assert_eq!(what, "fader");
-                assert_eq!(index, 99);
+                assert_eq!(index, 6);
+            }
+            _ => panic!("wrong error variant"),
+        }
+    }
+
+    #[test]
+    fn fader_not_on_model_returns_error_not_panic() {
+        let l = layout(); // Pro II (no SYSTEM node)
+        // Virtual4 only exists on the Duo.
+        let err = Command::SetFaderMute {
+            fader: Fader::Virtual4,
+            mute: true,
+        }
+        .encode(&l)
+        .unwrap_err();
+        match err {
+            EncodeError::FaderNotOnModel { fader, model } => {
+                assert_eq!(fader, Fader::Virtual4);
+                assert_eq!(model, DeviceModel::Pro2);
             }
             _ => panic!("wrong error variant"),
         }
@@ -475,15 +533,16 @@ mod tests {
     #[test]
     fn out_of_range_mix_cell_returns_error_not_panic() {
         let l = layout();
+        // CallMe1 (protocol source 16) sits past the matrix on a Pro II layout.
         let err = Command::SetMixDisabled {
-            source: 99,
-            mix: 0,
+            source: Source::CallMe1,
+            mix: MixOutput::Headphone1,
             disabled: true,
         }
         .encode(&l)
         .unwrap_err();
         match err {
-            EncodeError::MixCellOutOfRange { source, .. } => assert_eq!(source, 99),
+            EncodeError::MixCellOutOfRange { source, .. } => assert_eq!(source, 16),
             _ => panic!("wrong error variant"),
         }
     }
@@ -531,7 +590,7 @@ mod tests {
         let layout_b = Layout::from_full_sync(&nc("DEVICE", b_children)).unwrap();
 
         let cmd = Command::SetFaderMute {
-            fader: 0,
+            fader: Fader::Physical1,
             mute: true,
         };
         let a = cmd.encode(&layout_a).unwrap();
@@ -586,10 +645,13 @@ mod tests {
 
     #[test]
     fn link_callme_golden_bytes() {
-        // source = 16 (CallMe1 protocol index), mix = 0.
-        let bytes = Command::LinkCallMe { source: 16, mix: 0 }
-            .encode(&layout())
-            .unwrap();
+        // CallMe1 = protocol source 16, Headphone1 = protocol mix 0.
+        let bytes = Command::LinkCallMe {
+            source: Source::CallMe1,
+            mix: MixOutput::Headphone1,
+        }
+        .encode(&layout())
+        .unwrap();
         assert_eq!(bytes.len(), 1);
         // path[0] = (16<<8)|(4+0) = 4100 -> 2-byte compint `02 04 10`.
         let mut expected = vec![0x01, 0x01, 0x01, 0x02, 0x04, 0x10];
@@ -600,10 +662,13 @@ mod tests {
 
     #[test]
     fn unlink_callme_golden_bytes() {
-        // source = 17 (CallMe2 protocol index), mix = 2.
-        let bytes = Command::UnlinkCallMe { source: 17, mix: 2 }
-            .encode(&layout())
-            .unwrap();
+        // CallMe2 = protocol source 17, Headphone3 = protocol mix 2.
+        let bytes = Command::UnlinkCallMe {
+            source: Source::CallMe2,
+            mix: MixOutput::Headphone3,
+        }
+        .encode(&layout())
+        .unwrap();
         assert_eq!(bytes.len(), 1);
         // path[0] = (17<<8)|(4+2) = 4358 -> 2-byte compint `02 06 11`.
         let mut expected = vec![0x01, 0x01, 0x01, 0x02, 0x06, 0x11];
