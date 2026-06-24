@@ -23,7 +23,11 @@
 use crate::change_frame::{decode as decode_frame, ChangeFrame};
 use crate::juce_var::Value;
 use crate::layout::Layout;
-use crate::names::{Fader, MixOutput, Source};
+use crate::names::{
+    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
+    InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
+    Source,
+};
 use crate::valuetree::Node;
 
 /// Typed event decoded from one wire payload.
@@ -59,6 +63,137 @@ pub enum DeviceEvent {
     FaderAssignmentChanged {
         fader: Fader,
         source: Option<Source>,
+    },
+
+    /// A channel-strip parameter changed: the EQ, compressor, de-esser, noise
+    /// gate, HPF, aphex, pan, tone or preamp controls for one fader. These all
+    /// live as flat properties on the device's `CHANNEL` node, so they resolve
+    /// to a [`Fader`] through the same path as mute/cue.
+    ///
+    /// `param` is the typed property identity ([`ChannelParam`], a ground-truth
+    /// wire name); `value` is the self-describing wire value (its type comes
+    /// from the JUCE marker, not from a guess). A property not yet given a typed
+    /// identifier arrives as [`ChannelParam::Other`] rather than collapsing into
+    /// [`DeviceEvent::Unknown`], so the whole strip is addressable today and new
+    /// firmware properties still surface with their fader resolved.
+    ChannelParamChanged {
+        fader: Fader,
+        param: ChannelParam,
+        value: Value,
+    },
+
+    /// An input-source parameter changed: the preamp gain, 48V power, mic type,
+    /// phase, colour, wireless serial or SIP/RCV routing for one source. These
+    /// live on the device's `INPUTSOURCE` node (one per [`Source`]), addressed
+    /// independently of any fader assignment, so this resolves to a [`Source`],
+    /// not a [`Fader`].
+    ///
+    /// `param` is the typed property identity ([`InputSourceParam`]); `value` is
+    /// the self-describing wire value. An un-typed property arrives as
+    /// [`InputSourceParam::Other`] rather than collapsing into
+    /// [`DeviceEvent::Unknown`].
+    InputSourceParamChanged {
+        source: Source,
+        param: InputSourceParam,
+        value: Value,
+    },
+
+    /// A master-bus parameter changed: the master Compellor (compressor) or the
+    /// master delay, on the single `MASTERCHANNEL` node. There is exactly one
+    /// master bus, so this carries no addressing key. `param` is the typed
+    /// property identity ([`MasterParam`]); `value` is the self-describing wire
+    /// value. An un-typed property arrives as [`MasterParam::Other`] rather than
+    /// collapsing into [`DeviceEvent::Unknown`].
+    MasterParamChanged {
+        param: MasterParam,
+        value: Value,
+    },
+
+    /// An output-bus parameter changed: a monitor/Bluetooth level or mute, the
+    /// multi-out mode, or a recording-bus flag, on the single `OUTPUT` node.
+    /// Key-less for the same reason as [`DeviceEvent::MasterParamChanged`].
+    /// `param` is the typed property identity ([`OutputParam`]); an un-typed
+    /// property arrives as [`OutputParam::Other`].
+    OutputParamChanged {
+        param: OutputParam,
+        value: Value,
+    },
+
+    /// The auto-duck depth changed, on the single `DUCKER` node. Key-less:
+    /// there is exactly one ducker. `param` is the typed property identity
+    /// ([`DuckerParam`]); an un-typed property arrives as [`DuckerParam::Other`].
+    DuckerParamChanged {
+        param: DuckerParam,
+        value: Value,
+    },
+
+    /// A recorder transport property changed, on the single `RECORDER` node:
+    /// either read-back state (current state, elapsed ms, byte rate) or the
+    /// request* command channel echoing back. Key-less: one recorder. `param`
+    /// is the typed property identity ([`RecorderParam`]); an un-typed property
+    /// arrives as [`RecorderParam::Other`].
+    RecorderParamChanged {
+        param: RecorderParam,
+        value: Value,
+    },
+
+    /// A long-form player property changed, on the single `PLAYER` node:
+    /// transport (state, speed, progress), the loaded file, or the in/out +
+    /// fade envelope. Key-less: one player. `param` is the typed property
+    /// identity ([`PlayerParam`]); an un-typed property arrives as
+    /// [`PlayerParam::Other`].
+    PlayerParamChanged {
+        param: PlayerParam,
+        value: Value,
+    },
+
+    /// A per-headphone property changed (`headphoneColour` / `headphoneType`),
+    /// on one `HEADPHONE` node. The device has one node per physical headphone
+    /// jack, so this carries the `headphone` index. `param` is the typed
+    /// property identity ([`HeadphoneParam`]); an un-typed property arrives as
+    /// [`HeadphoneParam::Other`].
+    HeadphoneParamChanged {
+        headphone: u8,
+        param: HeadphoneParam,
+        value: Value,
+    },
+
+    /// A per-slot effects parameter changed (reverb, echo/delay, pitch shift,
+    /// distortion, robot or voice-disguise control), on one root
+    /// `EFFECTS_PARAMETERS` node. The device exposes a contiguous run of these,
+    /// one per channel-strip effects slot, so this carries the `effects` slot
+    /// index. `param` is the typed property identity ([`EffectsParam`]); an
+    /// un-typed property arrives as [`EffectsParam::Other`]. (The pad/sample
+    /// effects nested under `PADEFFECTS` are a separate addressing context, not
+    /// resolved here.)
+    EffectsParamChanged {
+        effects: u8,
+        param: EffectsParam,
+        value: Value,
+    },
+
+    /// A front-panel UI parameter changed (display / button brightness, selected
+    /// pad bank, metering mode, touchscreen EQ-band focus, ...), on the single
+    /// root `GUI` node. Key-less: there is exactly one GUI node. `param` is the
+    /// typed property identity ([`GuiParam`]); an un-typed property arrives as
+    /// [`GuiParam::Other`]. This is UI state, distinct from the
+    /// [`crate::Command::ScreenTouched`] wake-the-display pulse.
+    GuiParamChanged {
+        param: GuiParam,
+        value: Value,
+    },
+
+    /// A sound-pad parameter changed (colour / name / type / loaded sample /
+    /// transport / gain / envelope / mixer routing / effect / SIP / MIDI-trigger
+    /// control), on one `PAD` node inside the `SOUNDPADS` container. The device
+    /// exposes a contiguous run of these (one per pad), so this carries the `pad`
+    /// index. `param` is the typed property identity ([`PadParam`]); an un-typed
+    /// property arrives as [`PadParam::Other`]. (The pad recorder, pad effects and
+    /// FX presets live in separate sibling nodes, not resolved here.)
+    PadParamChanged {
+        pad: u8,
+        param: PadParam,
+        value: Value,
     },
 
     /// `mixLevelWithAnchor` carries two fields, `anchor|value`. `anchor` is the
@@ -246,11 +381,160 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    DeviceEvent::Unknown {
-        prop_name: name.to_string(),
-        path: path.to_vec(),
-        value,
+    // Typed param-family promotion: any *other* property on an addressable node
+    // becomes the matching typed `*ParamChanged` event, carrying the
+    // self-describing wire value. `resolve_param_target` decides which family the
+    // path lands on (CHANNEL strip, INPUTSOURCE, the MASTERCHANNEL / OUTPUT /
+    // DUCKER / RECORDER / PLAYER singletons, or a HEADPHONE jack). Those node
+    // index ranges are disjoint, so the resolver order is for clarity, not
+    // precedence. `value` is moved exactly once: into the matched event, else
+    // into Unknown (which also catches `propertyRemoved`, where value is None).
+    match (resolve_param_target(path, name, layout, model), value) {
+        (Some(ParamTarget::Channel(fader)), Some(value)) => DeviceEvent::ChannelParamChanged {
+            fader,
+            param: ChannelParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::InputSource(source)), Some(value)) => {
+            DeviceEvent::InputSourceParamChanged {
+                source,
+                param: InputSourceParam::from_name(name),
+                value,
+            }
+        }
+        (Some(ParamTarget::Master), Some(value)) => DeviceEvent::MasterParamChanged {
+            param: MasterParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Output), Some(value)) => DeviceEvent::OutputParamChanged {
+            param: OutputParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Ducker), Some(value)) => DeviceEvent::DuckerParamChanged {
+            param: DuckerParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Recorder), Some(value)) => DeviceEvent::RecorderParamChanged {
+            param: RecorderParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Player), Some(value)) => DeviceEvent::PlayerParamChanged {
+            param: PlayerParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Headphone(headphone)), Some(value)) => {
+            DeviceEvent::HeadphoneParamChanged {
+                headphone,
+                param: HeadphoneParam::from_name(name),
+                value,
+            }
+        }
+        (Some(ParamTarget::Effects(effects)), Some(value)) => DeviceEvent::EffectsParamChanged {
+            effects,
+            param: EffectsParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Gui), Some(value)) => DeviceEvent::GuiParamChanged {
+            param: GuiParam::from_name(name),
+            value,
+        },
+        (Some(ParamTarget::Pad(pad)), Some(value)) => DeviceEvent::PadParamChanged {
+            pad,
+            param: PadParam::from_name(name),
+            value,
+        },
+        (_, value) => DeviceEvent::Unknown {
+            prop_name: name.to_string(),
+            path: path.to_vec(),
+            value,
+        },
     }
+}
+
+/// Which addressable node family a property path lands on. Resolved by
+/// [`resolve_param_target`] and consumed by [`decode_property`] to promote a
+/// property to the matching typed `*ParamChanged` event.
+enum ParamTarget {
+    Channel(Fader),
+    InputSource(Source),
+    Master,
+    Output,
+    Ducker,
+    Recorder,
+    Player,
+    Headphone(u8),
+    Effects(u8),
+    Gui,
+    Pad(u8),
+}
+
+/// Resolve a property path to its addressable node family, if any. The node
+/// index ranges are disjoint, so the first match wins and the order is for
+/// readability only. Returns `None` for paths that don't land on a typed family
+/// (the caller then emits [`DeviceEvent::Unknown`]).
+fn resolve_param_target(
+    path: &[u32],
+    name: &str,
+    layout: &Layout,
+    model: DeviceModel,
+) -> Option<ParamTarget> {
+    // CHANNEL strip (the whole EQ / dynamics / HPF / aphex / pan / tone / preamp
+    // strip). The three specialized props that own dedicated variants are
+    // excluded so a malformed one of those falls to Unknown rather than
+    // masquerading as a generic strip param.
+    if !matches!(
+        name,
+        "channelOutputMute" | "channelCueEnable" | "channelInputSource"
+    ) {
+        if let Some(fader) = layout
+            .channel_index_from_path(path)
+            .and_then(|idx| Fader::from_index(model, idx))
+        {
+            return Some(ParamTarget::Channel(fader));
+        }
+    }
+    // INPUTSOURCE: the input* preamp/source params, on a node separate from
+    // CHANNEL. An ordinal past the named vocabulary (a rcSync / streamer-x
+    // placeholder source) doesn't map and falls through to Unknown.
+    if let Some(source) = layout
+        .input_source_index_from_path(path)
+        .and_then(Source::from_protocol)
+    {
+        return Some(ParamTarget::InputSource(source));
+    }
+    // Singletons: exactly one node each, key-less.
+    if layout.is_master_channel_path(path) {
+        return Some(ParamTarget::Master);
+    }
+    if layout.is_output_path(path) {
+        return Some(ParamTarget::Output);
+    }
+    if layout.is_ducker_path(path) {
+        return Some(ParamTarget::Ducker);
+    }
+    if layout.is_recorder_path(path) {
+        return Some(ParamTarget::Recorder);
+    }
+    if layout.is_player_path(path) {
+        return Some(ParamTarget::Player);
+    }
+    // HEADPHONE: multi-instance, one node per physical jack.
+    if let Some(headphone) = layout.headphone_index_from_path(path) {
+        return Some(ParamTarget::Headphone(headphone));
+    }
+    // EFFECTS_PARAMETERS: multi-instance, one node per channel-strip effects slot.
+    if let Some(effects) = layout.effects_index_from_path(path) {
+        return Some(ParamTarget::Effects(effects));
+    }
+    // GUI: the single front-panel UI-state node.
+    if layout.is_gui_path(path) {
+        return Some(ParamTarget::Gui);
+    }
+    // PAD: multi-instance, one node per sound pad inside SOUNDPADS (two-level).
+    if let Some(pad) = layout.pad_index_from_path(path) {
+        return Some(ParamTarget::Pad(pad));
+    }
+    None
 }
 
 /// `mixLevelWithAnchor` wire form: `anchor|value` (or a single number for
@@ -314,6 +598,23 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
                     },
                 });
             }
+            // Everything else on the CHANNEL node is the channel strip (EQ,
+            // dynamics, HPF, aphex, pan, tone, preamp). Emit each as a typed,
+            // fader-resolved param so the initial state carries the full strip,
+            // not just mute/cue/source. Skips the three handled above.
+            for p in &child.properties {
+                if matches!(
+                    p.name.as_str(),
+                    "channelOutputMute" | "channelCueEnable" | "channelInputSource"
+                ) {
+                    continue;
+                }
+                out.push(DeviceEvent::ChannelParamChanged {
+                    fader,
+                    param: ChannelParam::from_name(&p.name),
+                    value: p.value.clone(),
+                });
+            }
         }
         channel_idx = channel_idx.saturating_add(1);
     }
@@ -367,6 +668,165 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
         }
     }
 
+    // 4. INPUTSOURCE initial preamp/source params (one set per addressable
+    // source). The counter runs over every INPUTSOURCE node in tree order; the
+    // ordinal == the device `inputId` == `Source::to_protocol`. Ordinals past
+    // the named vocabulary (a Duo's rcSync / streamer-x placeholder block) don't
+    // map and are skipped, the counter still advancing so later sources keep
+    // their position.
+    let mut input_source_idx: u32 = 0;
+    for child in &root.children {
+        if child.name != "INPUTSOURCE" {
+            continue;
+        }
+        let ordinal = input_source_idx;
+        input_source_idx += 1;
+        let source = match u8::try_from(ordinal).ok().and_then(Source::from_protocol) {
+            Some(s) => s,
+            None => continue,
+        };
+        for p in &child.properties {
+            out.push(DeviceEvent::InputSourceParamChanged {
+                source,
+                param: InputSourceParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+
+    // 5. MASTERCHANNEL and OUTPUT initial params (singletons). Emit every
+    // property the device carries on each node as a typed, key-less event.
+    if let Some(node) = root.children.iter().find(|c| c.name == "MASTERCHANNEL") {
+        for p in &node.properties {
+            out.push(DeviceEvent::MasterParamChanged {
+                param: MasterParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+    if let Some(node) = root.children.iter().find(|c| c.name == "OUTPUT") {
+        for p in &node.properties {
+            out.push(DeviceEvent::OutputParamChanged {
+                param: OutputParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+
+    // 6. DUCKER / RECORDER / PLAYER initial params (singletons). Same key-less
+    // shape: emit every property each node carries as its typed event.
+    if let Some(node) = root.children.iter().find(|c| c.name == "DUCKER") {
+        for p in &node.properties {
+            out.push(DeviceEvent::DuckerParamChanged {
+                param: DuckerParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+    if let Some(node) = root.children.iter().find(|c| c.name == "RECORDER") {
+        for p in &node.properties {
+            out.push(DeviceEvent::RecorderParamChanged {
+                param: RecorderParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+    if let Some(node) = root.children.iter().find(|c| c.name == "PLAYER") {
+        for p in &node.properties {
+            out.push(DeviceEvent::PlayerParamChanged {
+                param: PlayerParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+
+    // 7. HEADPHONE initial params (multi-instance, one node per physical jack).
+    // The counter runs over every HEADPHONE node in tree order; its ordinal is
+    // the headphone index that events and commands address.
+    let mut headphone_idx: u8 = 0;
+    for child in &root.children {
+        if child.name != "HEADPHONE" {
+            continue;
+        }
+        let headphone = headphone_idx;
+        headphone_idx = headphone_idx.saturating_add(1);
+        for p in &child.properties {
+            out.push(DeviceEvent::HeadphoneParamChanged {
+                headphone,
+                param: HeadphoneParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+
+    // 8. EFFECTS_PARAMETERS initial params (multi-instance, one node per
+    // channel-strip effects slot). Only the first contiguous run at root is the
+    // addressable slots; the counter stops at the first non-EFFECTS_PARAMETERS
+    // node so the nested PADEFFECTS set (a separate addressing context) is not
+    // folded in. The ordinal is the slot index events and commands address.
+    let mut effects_idx: u8 = 0;
+    let mut seen_effects = false;
+    for child in &root.children {
+        if child.name != "EFFECTS_PARAMETERS" {
+            // Stop at the end of the first run so nested-set siblings later in
+            // the tree (if hoisted) never extend the addressable range.
+            if seen_effects {
+                break;
+            }
+            continue;
+        }
+        seen_effects = true;
+        let effects = effects_idx;
+        effects_idx = effects_idx.saturating_add(1);
+        for p in &child.properties {
+            out.push(DeviceEvent::EffectsParamChanged {
+                effects,
+                param: EffectsParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+
+    // 9. GUI initial params (singleton). Same key-less shape as the other
+    // singletons: emit every property the single front-panel UI-state node
+    // carries as a typed GuiParamChanged.
+    if let Some(node) = root.children.iter().find(|c| c.name == "GUI") {
+        for p in &node.properties {
+            out.push(DeviceEvent::GuiParamChanged {
+                param: GuiParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
+        }
+    }
+
+    // 10. SOUNDPADS initial params (multi-instance PADs nested inside the
+    // container). Only the first contiguous run of PAD nodes is the addressable
+    // pads; the counter stops at the first non-PAD child so any sibling node
+    // inside the container never extends the addressable range. The ordinal in
+    // the run is the pad index events and commands address.
+    if let Some(soundpads) = root.children.iter().find(|c| c.name == "SOUNDPADS") {
+        let mut pad_idx: u8 = 0;
+        let mut seen_pad = false;
+        for child in &soundpads.children {
+            if child.name != "PAD" {
+                if seen_pad {
+                    break;
+                }
+                continue;
+            }
+            seen_pad = true;
+            let pad = pad_idx;
+            pad_idx = pad_idx.saturating_add(1);
+            for p in &child.properties {
+                out.push(DeviceEvent::PadParamChanged {
+                    pad,
+                    param: PadParam::from_name(&p.name),
+                    value: p.value.clone(),
+                });
+            }
+        }
+    }
+
     out
 }
 
@@ -395,312 +855,5 @@ fn string_prop<'a>(node: &'a Node, name: &str) -> Option<&'a str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::change_frame::encode_property_changed;
-    use crate::valuetree::{Node, Property};
-
-    fn n(name: &str) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children: vec![],
-        }
-    }
-    fn np(name: &str, properties: Vec<Property>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties,
-            children: vec![],
-        }
-    }
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-    fn prop(name: &str, value: Value) -> Property {
-        Property {
-            name: name.to_string(),
-            value,
-        }
-    }
-
-    fn synthetic_root() -> Node {
-        let phys = nc(
-            "PHYSICALINTERFACE",
-            vec![n("HEADER"), n("FADER"), n("FADER"), n("FADER")],
-        );
-        let mut children = vec![n("OTHER"), phys, n("CHANNEL"), n("CHANNEL"), n("CHANNEL")];
-        for _ in 0..26 {
-            children.push(n("MIX"));
-        }
-        nc("DEVICE", children)
-    }
-
-    fn layout() -> Layout {
-        Layout::from_full_sync(&synthetic_root()).unwrap()
-    }
-
-    #[test]
-    fn decodes_fader_mute_changed() {
-        let l = layout();
-        let path = l.channel_path(2).unwrap();
-        let payload = encode_property_changed(&path, "channelOutputMute", &Value::Bool(true));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderMuteChanged {
-                fader: Fader::Physical3,
-                muted: true,
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_fader_cue_changed() {
-        let l = layout();
-        let path = l.channel_path(0).unwrap();
-        let payload = encode_property_changed(&path, "channelCueEnable", &Value::Bool(false));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderCueChanged {
-                fader: Fader::Physical1,
-                enabled: false,
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_fader_level_changed_two_level_path() {
-        let l = layout();
-        let path = l.fader_path(1).unwrap();
-        let payload = encode_property_changed(&path, "faderLevel", &Value::Int(99));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderLevelChanged {
-                fader: Fader::Physical2,
-                level: 99,
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_fader_level_clamps_to_midi_range() {
-        let l = layout();
-        let path = l.fader_path(0).unwrap();
-        let payload = encode_property_changed(&path, "faderLevel", &Value::Int(500));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderLevelChanged {
-                fader: Fader::Physical1,
-                level: 127,
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_mix_disabled_changed() {
-        let l = layout();
-        let path = l.mix_cell_path(1, 5).unwrap();
-        let payload = encode_property_changed(&path, "mixDisabled", &Value::Bool(true));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::MixDisabledChanged {
-                source: Source::Combo2,
-                mix: MixOutput::Recording,
-                disabled: true,
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_mix_level_anchor_split() {
-        let l = layout();
-        let path = l.mix_cell_path(0, 0).unwrap();
-        let payload = encode_property_changed(
-            &path,
-            "mixLevelWithAnchor",
-            &Value::String("0.3|0.7".to_string()),
-        );
-        let event = decode_event(&payload, &l).unwrap();
-        match event {
-            DeviceEvent::MixLevelChanged {
-                source,
-                mix,
-                anchor,
-                value,
-            } => {
-                assert_eq!(source, Source::Combo1);
-                assert_eq!(mix, MixOutput::Headphone1);
-                assert!((anchor - 0.3).abs() < 1e-4);
-                assert!((value - 0.7).abs() < 1e-4);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn decodes_encoder_signal_as_fader_touch() {
-        // encoderSignal addresses the fader by raw index (stride 1, no base).
-        let l = layout();
-        let payload = encode_property_changed(&[1u32], "encoderSignal", &Value::Int(1));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderTouched {
-                fader: Fader::Physical2
-            }
-        );
-    }
-
-    #[test]
-    fn decodes_channel_input_source_echo_at_stride_6() {
-        // The echo for fader N sits at first_channel + 6*N, not the stride-1
-        // write path.
-        let l = layout();
-        let path = vec![l.first_channel() + 6 * 2];
-        let payload = encode_property_changed(&path, "channelInputSource", &Value::Int(7));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderAssignmentChanged {
-                fader: Fader::Physical3,
-                source: Some(Source::Usb1),
-            }
-        );
-    }
-
-    #[test]
-    fn channel_input_source_negative_value_is_unassigned() {
-        let l = layout();
-        let path = vec![l.first_channel()]; // fader 0
-        let payload = encode_property_changed(&path, "channelInputSource", &Value::Int(-1));
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(
-            event,
-            DeviceEvent::FaderAssignmentChanged {
-                fader: Fader::Physical1,
-                source: None,
-            }
-        );
-    }
-
-    #[test]
-    fn unknown_property_preserves_wire_data() {
-        let l = layout();
-        let path = l.channel_path(0).unwrap();
-        let payload = encode_property_changed(&path, "futureProperty", &Value::Int(42));
-        let event = decode_event(&payload, &l).unwrap();
-        match event {
-            DeviceEvent::Unknown {
-                prop_name,
-                path: p,
-                value,
-            } => {
-                assert_eq!(prop_name, "futureProperty");
-                assert_eq!(p, path);
-                assert_eq!(value, Some(Value::Int(42)));
-            }
-            other => panic!("expected Unknown, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn structural_change_yields_layout_invalidated() {
-        let l = layout();
-        // childRemoved: [4] [path=[2]] [oldIndex=3]
-        let payload = [0x04, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03];
-        let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(event, DeviceEvent::LayoutInvalidated);
-    }
-
-    #[test]
-    fn full_sync_yields_initial_state_with_extracted_events() {
-        let phys = nc(
-            "PHYSICALINTERFACE",
-            vec![
-                np("FADER", vec![prop("faderLevel", Value::Int(64))]),
-                np("FADER", vec![prop("faderLevel", Value::Int(100))]),
-            ],
-        );
-        let mut children = vec![
-            phys,
-            np(
-                "CHANNEL",
-                vec![
-                    prop("channelOutputMute", Value::Bool(false)),
-                    prop("channelCueEnable", Value::Bool(true)),
-                ],
-            ),
-            np(
-                "CHANNEL",
-                vec![prop("channelOutputMute", Value::Bool(true))],
-            ),
-        ];
-        // 13 MIX nodes -> 1 source, mix 0..12.
-        for i in 0..13 {
-            children.push(np(
-                "MIX",
-                vec![prop(
-                    "mixLevelWithAnchor",
-                    Value::String(format!("0.5|{}", 0.1 * i as f32)),
-                )],
-            ));
-        }
-        let root = nc("DEVICE", children);
-        let l = Layout::from_full_sync(&root).unwrap();
-
-        let events = extract_initial_state(&root, &l);
-        // 2 fader levels + 2 mute + 1 cue + 13 mix levels = 18 events
-        assert_eq!(events.len(), 18);
-        assert_eq!(
-            events[0],
-            DeviceEvent::FaderLevelChanged {
-                fader: Fader::Physical1,
-                level: 64,
-            }
-        );
-        assert_eq!(
-            events[1],
-            DeviceEvent::FaderLevelChanged {
-                fader: Fader::Physical2,
-                level: 100,
-            }
-        );
-        assert_eq!(
-            events[2],
-            DeviceEvent::FaderMuteChanged {
-                fader: Fader::Physical1,
-                muted: false,
-            }
-        );
-        assert_eq!(
-            events[3],
-            DeviceEvent::FaderCueChanged {
-                fader: Fader::Physical1,
-                enabled: true,
-            }
-        );
-        assert_eq!(
-            events[4],
-            DeviceEvent::FaderMuteChanged {
-                fader: Fader::Physical2,
-                muted: true,
-            }
-        );
-        // Last few should be mix levels
-        if let DeviceEvent::MixLevelChanged { source, mix, .. } = events[17] {
-            assert_eq!(source, Source::Combo1);
-            assert_eq!(mix, MixOutput::CallMe3);
-        } else {
-            panic!("expected MixLevelChanged at end");
-        }
-    }
-}
+#[path = "events_tests.rs"]
+mod tests;

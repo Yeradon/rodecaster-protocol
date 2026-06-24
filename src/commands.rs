@@ -13,7 +13,11 @@
 use crate::change_frame;
 use crate::juce_var::Value;
 use crate::layout::Layout;
-use crate::names::{DeviceModel, Fader, MixOutput, Source};
+use crate::names::{
+    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
+    InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
+    Source,
+};
 
 /// Mix link/unlink request *pulses*. The device toggles a routing cell with a
 /// two-frame pulse on `mixLinkRequest` / `mixUnlinkRequest`. Each 6-byte blob is
@@ -129,6 +133,130 @@ pub enum Command {
     LinkCallMe { source: Source, mix: MixOutput },
     /// Unlink a CallMe return channel from a mix. See [`Command::LinkCallMe`].
     UnlinkCallMe { source: Source, mix: MixOutput },
+    /// Set any channel-strip DSP parameter (EQ, compressor, de-esser, noise
+    /// gate, HPF, aphex, pan, tone, preamp) on a fader's CHANNEL node.
+    ///
+    /// This is the encode-side mirror of
+    /// [`crate::DeviceEvent::ChannelParamChanged`]. The crate owns only the
+    /// part it has verified on hardware: the CHANNEL *path* (resolved through
+    /// [`Layout`]) and the property *name* (a firmware ground-truth string via
+    /// [`ChannelParam`]). The `value` is **caller-supplied and its semantics
+    /// are not all capture-verified** (range, scale, units differ per
+    /// parameter), so the wire `Value` type and contents are the caller's
+    /// responsibility. The JUCE wire is self-describing, so whatever `Value`
+    /// you pass round-trips byte-faithfully; getting the device to *act* on it
+    /// correctly is what needs a capture per parameter.
+    SetChannelParam {
+        fader: Fader,
+        param: ChannelParam,
+        value: Value,
+    },
+    /// Set any input-source parameter (preamp gain, 48V power, mic type, phase,
+    /// colour, wireless serial, SIP/RCV routing) on a source's INPUTSOURCE node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::InputSourceParamChanged`].
+    /// Unlike [`Command::SetChannelParam`] this addresses the *source* directly
+    /// (an `INPUTSOURCE` node, indexed by [`Source`]), independent of any fader
+    /// assignment. The crate owns the INPUTSOURCE path (via [`Layout`]) and the
+    /// property name (via [`InputSourceParam`]); the `value` is caller-supplied
+    /// and rides byte-faithfully on the self-describing JUCE wire (per-parameter
+    /// range/scale semantics are the caller's responsibility, as with
+    /// [`Command::SetChannelParam`]).
+    SetInputSourceParam {
+        source: Source,
+        param: InputSourceParam,
+        value: Value,
+    },
+    /// Set a master-bus parameter (the master Compellor compressor or the master
+    /// delay) on the single `MASTERCHANNEL` node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::MasterParamChanged`].
+    /// There is exactly one master bus, so this carries no addressing key. The
+    /// crate owns the path (via [`Layout`]) and the property name (via
+    /// [`MasterParam`]); the `value` is caller-supplied and rides byte-faithfully
+    /// on the self-describing JUCE wire (per-parameter range/scale semantics are
+    /// the caller's responsibility, as with [`Command::SetChannelParam`]).
+    SetMasterParam { param: MasterParam, value: Value },
+    /// Set an output-bus parameter (monitor/Bluetooth levels and mutes, the
+    /// multi-out mode, or the recording-bus flags) on the single `OUTPUT` node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::OutputParamChanged`].
+    /// There is exactly one output bus, so this carries no addressing key. Path
+    /// and property name are crate-owned (via [`Layout`] and [`OutputParam`]);
+    /// the `value` is caller-supplied and rides byte-faithfully on the wire.
+    SetOutputParam { param: OutputParam, value: Value },
+    /// Set the auto-duck depth on the single `DUCKER` node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::DuckerParamChanged`].
+    /// Key-less: one ducker. Path and property name are crate-owned (via
+    /// [`Layout`] and [`DuckerParam`]); the `value` rides byte-faithfully.
+    SetDuckerParam { param: DuckerParam, value: Value },
+    /// Set a recorder transport property on the single `RECORDER` node. The
+    /// `request*` params are the actual command channel: set
+    /// [`RecorderParam::RequestRecordState`] to start/stop recording, or
+    /// [`RecorderParam::RequestDropMarker`] to drop a chapter marker.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::RecorderParamChanged`].
+    /// Key-less: one recorder. Path and property name are crate-owned (via
+    /// [`Layout`] and [`RecorderParam`]); the `value` rides byte-faithfully.
+    SetRecorderParam { param: RecorderParam, value: Value },
+    /// Set a long-form player property (transport, loaded file, or envelope) on
+    /// the single `PLAYER` node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::PlayerParamChanged`].
+    /// Key-less: one player. Path and property name are crate-owned (via
+    /// [`Layout`] and [`PlayerParam`]); the `value` rides byte-faithfully.
+    SetPlayerParam { param: PlayerParam, value: Value },
+    /// Set a per-headphone property (`headphoneColour` / `headphoneType`) on one
+    /// `HEADPHONE` node, addressed by jack index.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::HeadphoneParamChanged`].
+    /// Path (from the `headphone` index via [`Layout`]) and property name (via
+    /// [`HeadphoneParam`]) are crate-owned; the `value` rides byte-faithfully.
+    SetHeadphoneParam {
+        headphone: u8,
+        param: HeadphoneParam,
+        value: Value,
+    },
+    /// Set a per-slot effects parameter (reverb, echo/delay, pitch shift,
+    /// distortion, robot or voice-disguise control) on one root
+    /// `EFFECTS_PARAMETERS` node, addressed by slot index.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::EffectsParamChanged`].
+    /// Path (from the `effects` slot index via [`Layout`]) and property name (via
+    /// [`EffectsParam`]) are crate-owned; the `value` rides byte-faithfully on the
+    /// self-describing JUCE wire (per-parameter range/scale semantics are the
+    /// caller's responsibility, as with [`Command::SetChannelParam`]).
+    SetEffectsParam {
+        effects: u8,
+        param: EffectsParam,
+        value: Value,
+    },
+    /// Set a front-panel UI parameter (display / button brightness, selected pad
+    /// bank, metering mode, touchscreen EQ-band focus, ...) on the single root
+    /// `GUI` node. Key-less: there is exactly one GUI node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::GuiParamChanged`]. Path
+    /// (the single `GUI` node via [`Layout`]) and property name (via [`GuiParam`])
+    /// are crate-owned; the `value` rides byte-faithfully on the self-describing
+    /// JUCE wire. This is ordinary UI state and is unrelated to
+    /// [`Command::ScreenTouched`], which is a separate wake-the-display pulse.
+    SetGuiParam { param: GuiParam, value: Value },
+    /// Set a sound-pad parameter (colour / name / type / loaded sample /
+    /// transport / gain / envelope / mixer routing / effect / SIP / MIDI-trigger
+    /// control) on one `PAD` node inside the `SOUNDPADS` container, addressed by
+    /// pad index.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::PadParamChanged`]. Path
+    /// (from the `pad` index via [`Layout`]) and property name (via [`PadParam`])
+    /// are crate-owned; the `value` rides byte-faithfully on the self-describing
+    /// JUCE wire. `Err(EncodeError::OutOfRange)` if the pad index is past the
+    /// discovered run.
+    SetPadParam {
+        pad: u8,
+        param: PadParam,
+        value: Value,
+    },
 }
 
 impl Command {
@@ -252,6 +380,124 @@ impl Command {
                     &Value::Binary(CALLME_REQUEST_BLOB.to_vec()),
                 )])
             }
+            Command::SetChannelParam {
+                fader,
+                param,
+                value,
+            } => {
+                let path = channel_path(layout, fader_index(layout, *fader)?)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetInputSourceParam {
+                source,
+                param,
+                value,
+            } => {
+                let path = input_source_path(layout, *source)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetMasterParam { param, value } => {
+                let path = layout
+                    .master_channel_path()
+                    .ok_or(EncodeError::MissingNode {
+                        what: "MASTERCHANNEL",
+                    })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetOutputParam { param, value } => {
+                let path = layout
+                    .output_path()
+                    .ok_or(EncodeError::MissingNode { what: "OUTPUT" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetDuckerParam { param, value } => {
+                let path = layout
+                    .ducker_path()
+                    .ok_or(EncodeError::MissingNode { what: "DUCKER" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRecorderParam { param, value } => {
+                let path = layout
+                    .recorder_path()
+                    .ok_or(EncodeError::MissingNode { what: "RECORDER" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetPlayerParam { param, value } => {
+                let path = layout
+                    .player_path()
+                    .ok_or(EncodeError::MissingNode { what: "PLAYER" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetHeadphoneParam {
+                headphone,
+                param,
+                value,
+            } => {
+                let path = headphone_path(layout, *headphone)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetEffectsParam {
+                effects,
+                param,
+                value,
+            } => {
+                let path = effects_path(layout, *effects)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetGuiParam { param, value } => {
+                let path = layout
+                    .gui_path()
+                    .ok_or(EncodeError::MissingNode { what: "GUI" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetPadParam { pad, param, value } => {
+                let path = pad_path(layout, *pad)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
         }
     }
 }
@@ -282,11 +528,46 @@ fn channel_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
     })
 }
 
+fn input_source_path(layout: &Layout, source: Source) -> Result<Vec<u32>, EncodeError> {
+    let idx = source.to_protocol();
+    layout
+        .input_source_path(idx)
+        .ok_or(EncodeError::OutOfRange {
+            what: "input source",
+            index: idx as u32,
+            bound: layout.input_source_count() as u32,
+        })
+}
+
 fn fader_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
     layout.fader_path(idx).ok_or(EncodeError::OutOfRange {
         what: "fader",
         index: idx as u32,
         bound: layout.fader_count() as u32,
+    })
+}
+
+fn headphone_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
+    layout.headphone_path(idx).ok_or(EncodeError::OutOfRange {
+        what: "headphone",
+        index: idx as u32,
+        bound: layout.headphone_count() as u32,
+    })
+}
+
+fn effects_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
+    layout.effects_path(idx).ok_or(EncodeError::OutOfRange {
+        what: "effects",
+        index: idx as u32,
+        bound: layout.effects_count() as u32,
+    })
+}
+
+fn pad_path(layout: &Layout, idx: u8) -> Result<Vec<u32>, EncodeError> {
+    layout.pad_path(idx).ok_or(EncodeError::OutOfRange {
+        what: "pad",
+        index: idx as u32,
+        bound: layout.pad_count() as u32,
     })
 }
 
@@ -317,6 +598,10 @@ pub enum EncodeError {
     /// The named fader strip does not exist on this device model (e.g.
     /// `Physical6` on a Duo, or `Virtual4` on a Pro II).
     FaderNotOnModel { fader: Fader, model: DeviceModel },
+    /// A singleton node the command addresses (e.g. `MASTERCHANNEL`, `OUTPUT`)
+    /// was not present in the layout's fullSync. Unlike [`EncodeError::OutOfRange`]
+    /// there is no index: the whole family is absent.
+    MissingNode { what: &'static str },
 }
 
 impl std::fmt::Display for EncodeError {
@@ -327,6 +612,9 @@ impl std::fmt::Display for EncodeError {
             }
             EncodeError::FaderNotOnModel { fader, model } => {
                 write!(f, "fader {fader} does not exist on {model}")
+            }
+            EncodeError::MissingNode { what } => {
+                write!(f, "layout has no {what} node")
             }
             EncodeError::MixCellOutOfRange {
                 source,
@@ -344,413 +632,5 @@ impl std::fmt::Display for EncodeError {
 impl std::error::Error for EncodeError {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::change_frame::{decode, ChangeFrame};
-    use crate::valuetree::Node;
-
-    /// Build a small synthetic fullSync tree (PHYSICALINTERFACE at an unusual
-    /// position to prove no hardcoded constants).
-    fn synthetic_root() -> Node {
-        fn n(name: &str) -> Node {
-            Node {
-                name: name.to_string(),
-                properties: vec![],
-                children: vec![],
-            }
-        }
-        fn nc(name: &str, children: Vec<Node>) -> Node {
-            Node {
-                name: name.to_string(),
-                properties: vec![],
-                children,
-            }
-        }
-        let phys = nc(
-            "PHYSICALINTERFACE",
-            vec![n("HEADER"), n("FADER"), n("FADER"), n("FADER")],
-        );
-        let mut children = vec![
-            n("OTHER"),
-            phys, // physical_interface_idx = 1
-            n("CHANNEL"),
-            n("CHANNEL"),
-            n("CHANNEL"),
-        ];
-        for _ in 0..26 {
-            children.push(n("MIX"));
-        }
-        nc("DEVICE", children)
-    }
-
-    fn layout() -> Layout {
-        Layout::from_full_sync(&synthetic_root()).unwrap()
-    }
-
-    #[test]
-    fn set_fader_mute_encodes_juce_property_changed() {
-        let l = layout();
-        // Pro II model (no SYSTEM node): Physical2 -> fader index 1.
-        let bytes = Command::SetFaderMute {
-            fader: Fader::Physical2,
-            mute: true,
-        }
-        .encode(&l)
-        .unwrap();
-        assert_eq!(bytes.len(), 1);
-
-        // Decode through the JUCE change-frame codec and check addressing.
-        let frame = decode(&bytes[0]).expect("decodes");
-        match frame {
-            ChangeFrame::PropertyChanged { path, name, value } => {
-                assert_eq!(path, l.channel_path(1).unwrap());
-                assert_eq!(name, "channelOutputMute");
-                assert_eq!(value, Value::Bool(true));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn set_fader_level_uses_two_level_path_through_physical_interface() {
-        let l = layout();
-        let bytes = Command::SetFaderLevel {
-            fader: Fader::Physical3,
-            level: 75,
-        }
-        .encode(&l)
-        .unwrap();
-        let frame = decode(&bytes[0]).unwrap();
-        match frame {
-            ChangeFrame::PropertyChanged { path, name, value } => {
-                // Physical3 -> index 2; [physical_interface_idx=1, first_fader_in_phys=1 + 2 = 3]
-                assert_eq!(path, vec![1, 3]);
-                assert_eq!(name, "faderLevel");
-                assert_eq!(value, Value::Int(75));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn assign_fader_source_some_and_none() {
-        let l = layout();
-
-        let some = Command::AssignFaderSource {
-            fader: Fader::Physical1,
-            source: Some(Source::Combo2_3), // protocol index 5
-        }
-        .encode(&l)
-        .unwrap();
-        let frame = decode(&some[0]).unwrap();
-        match frame {
-            ChangeFrame::PropertyChanged { name, value, .. } => {
-                assert_eq!(name, "channelInputSource");
-                assert_eq!(value, Value::Int(5));
-            }
-            _ => panic!("wrong variant"),
-        }
-
-        let none = Command::AssignFaderSource {
-            fader: Fader::Physical1,
-            source: None,
-        }
-        .encode(&l)
-        .unwrap();
-        let frame = decode(&none[0]).unwrap();
-        match frame {
-            ChangeFrame::PropertyChanged { value, .. } => {
-                // `-1` as i32, sign-extended through i64.
-                assert_eq!(value, Value::Int(CHANNEL_INPUT_SOURCE_UNASSIGNED));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn set_mix_disabled_addresses_source_major_cell() {
-        let l = layout();
-        let bytes = Command::SetMixDisabled {
-            source: Source::Combo2,    // protocol index 1
-            mix: MixOutput::Recording, // protocol index 5
-            disabled: true,
-        }
-        .encode(&l)
-        .unwrap();
-        let frame = decode(&bytes[0]).unwrap();
-        match frame {
-            ChangeFrame::PropertyChanged { path, name, value } => {
-                assert_eq!(path, l.mix_cell_path(1, 5).unwrap());
-                assert_eq!(name, "mixDisabled");
-                assert_eq!(value, Value::Bool(true));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn link_mix_emits_device_exact_sequence() {
-        let l = layout();
-        let bytes = Command::LinkMix {
-            source: Source::Combo1,
-            mix: MixOutput::Headphone4,
-        }
-        .encode(&l)
-        .unwrap();
-        assert_eq!(
-            bytes.len(),
-            4,
-            "link emits enable + unmute + press + release"
-        );
-
-        let expect = [
-            ("mixDisabled", Value::Bool(false)),
-            ("mixMute", Value::Bool(false)),
-            ("mixLinkRequest", Value::Binary(MIX_LINK_PRESS.to_vec())),
-            ("mixLinkRequest", Value::Binary(MIX_LINK_RELEASE.to_vec())),
-        ];
-        for (raw, (exp_name, exp_val)) in bytes.iter().zip(expect.iter()) {
-            match decode(raw).unwrap() {
-                ChangeFrame::PropertyChanged { name, value, .. } => {
-                    assert_eq!(&name, exp_name);
-                    assert_eq!(&value, exp_val);
-                }
-                _ => panic!("wrong variant"),
-            }
-        }
-    }
-
-    #[test]
-    fn unlink_mix_emits_press_release_pulse() {
-        let l = layout();
-        let bytes = Command::UnlinkMix {
-            source: Source::Combo1,
-            mix: MixOutput::Headphone4,
-        }
-        .encode(&l)
-        .unwrap();
-        assert_eq!(bytes.len(), 2, "unlink emits press + release");
-
-        let expect = [
-            Value::Binary(MIX_UNLINK_PRESS.to_vec()),
-            Value::Binary(MIX_UNLINK_RELEASE.to_vec()),
-        ];
-        for (raw, exp_val) in bytes.iter().zip(expect.iter()) {
-            match decode(raw).unwrap() {
-                ChangeFrame::PropertyChanged { name, value, .. } => {
-                    assert_eq!(name, "mixUnlinkRequest");
-                    assert_eq!(&value, exp_val);
-                }
-                _ => panic!("wrong variant"),
-            }
-        }
-    }
-
-    #[test]
-    fn set_mix_mute_addresses_cell() {
-        let l = layout();
-        let bytes = Command::SetMixMute {
-            source: Source::Combo2,    // protocol index 1
-            mix: MixOutput::Recording, // protocol index 5
-            mute: true,
-        }
-        .encode(&l)
-        .unwrap();
-        assert_eq!(bytes.len(), 1);
-        let frame = decode(&bytes[0]).unwrap();
-        match frame {
-            ChangeFrame::PropertyChanged { path, name, value } => {
-                assert_eq!(path, l.mix_cell_path(1, 5).unwrap());
-                assert_eq!(name, "mixMute");
-                assert_eq!(value, Value::Bool(true));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn out_of_range_fader_returns_error_not_panic() {
-        let l = layout();
-        // Virtual1 is a valid Pro II strip (index 6) but the synthetic layout
-        // only has 3 channels, so it resolves past the discovered count.
-        let err = Command::SetFaderMute {
-            fader: Fader::Virtual1,
-            mute: true,
-        }
-        .encode(&l)
-        .unwrap_err();
-        match err {
-            EncodeError::OutOfRange { what, index, .. } => {
-                assert_eq!(what, "fader");
-                assert_eq!(index, 6);
-            }
-            _ => panic!("wrong error variant"),
-        }
-    }
-
-    #[test]
-    fn fader_not_on_model_returns_error_not_panic() {
-        let l = layout(); // Pro II (no SYSTEM node)
-                          // Virtual4 only exists on the Duo.
-        let err = Command::SetFaderMute {
-            fader: Fader::Virtual4,
-            mute: true,
-        }
-        .encode(&l)
-        .unwrap_err();
-        match err {
-            EncodeError::FaderNotOnModel { fader, model } => {
-                assert_eq!(fader, Fader::Virtual4);
-                assert_eq!(model, DeviceModel::Pro2);
-            }
-            _ => panic!("wrong error variant"),
-        }
-    }
-
-    #[test]
-    fn out_of_range_mix_cell_returns_error_not_panic() {
-        let l = layout();
-        // CallMe1 (protocol source 16) sits past the matrix on a Pro II layout.
-        let err = Command::SetMixDisabled {
-            source: Source::CallMe1,
-            mix: MixOutput::Headphone1,
-            disabled: true,
-        }
-        .encode(&l)
-        .unwrap_err();
-        match err {
-            EncodeError::MixCellOutOfRange { source, .. } => assert_eq!(source, 16),
-            _ => panic!("wrong error variant"),
-        }
-    }
-
-    /// Critical: the same Command encodes differently when the Layout's bases
-    /// differ. Proves Command::encode is layout-driven, not constant-driven.
-    #[test]
-    fn encoding_depends_on_layout_not_constants() {
-        fn n(name: &str) -> Node {
-            Node {
-                name: name.to_string(),
-                properties: vec![],
-                children: vec![],
-            }
-        }
-        fn nc(name: &str, children: Vec<Node>) -> Node {
-            Node {
-                name: name.to_string(),
-                properties: vec![],
-                children,
-            }
-        }
-
-        // Tree A: CHANNEL at root index 3.
-        let phys = nc("PHYSICALINTERFACE", vec![n("FADER"), n("FADER")]);
-        let mut a_children = vec![phys.clone(), n("X"), n("Y"), n("CHANNEL"), n("CHANNEL")];
-        for _ in 0..13 {
-            a_children.push(n("MIX"));
-        }
-        let layout_a = Layout::from_full_sync(&nc("DEVICE", a_children)).unwrap();
-
-        // Tree B: CHANNEL at root index 5 (more leading siblings).
-        let mut b_children = vec![
-            phys,
-            n("X"),
-            n("Y"),
-            n("Z"),
-            n("W"),
-            n("CHANNEL"),
-            n("CHANNEL"),
-        ];
-        for _ in 0..13 {
-            b_children.push(n("MIX"));
-        }
-        let layout_b = Layout::from_full_sync(&nc("DEVICE", b_children)).unwrap();
-
-        let cmd = Command::SetFaderMute {
-            fader: Fader::Physical1,
-            mute: true,
-        };
-        let a = cmd.encode(&layout_a).unwrap();
-        let b = cmd.encode(&layout_b).unwrap();
-
-        // Same Command, but DIFFERENT wire paths -> different bytes.
-        assert_ne!(
-            a, b,
-            "Command bytes must reflect Layout differences (proves no hardcoded base)"
-        );
-
-        // Decode each, verify they address the right CHANNEL in their tree.
-        let fa = decode(&a[0]).unwrap();
-        let fb = decode(&b[0]).unwrap();
-        let path_a = match fa {
-            ChangeFrame::PropertyChanged { path, .. } => path,
-            _ => panic!(),
-        };
-        let path_b = match fb {
-            ChangeFrame::PropertyChanged { path, .. } => path,
-            _ => panic!(),
-        };
-        assert_eq!(path_a, vec![3]);
-        assert_eq!(path_b, vec![5]);
-    }
-
-    // --- Frozen wire-byte goldens for the layout-independent / special-path
-    // commands. The var-value byte sequences (Bool, Binary) are the exact
-    // frames pinned by `juce_var::tests::write_matches_known_juce_frames`.
-
-    #[test]
-    fn screen_touched_golden_bytes() {
-        let bytes = Command::ScreenTouched.encode(&layout()).unwrap();
-        assert_eq!(bytes.len(), 1);
-        // Header (changeType + nLevels=1 + path num-bytes prefix) then the
-        // name with NO path value and NO var value. Not a clean propertyChanged.
-        let mut expected = vec![0x01, 0x01, 0x01, 0x01];
-        expected.extend_from_slice(b"screenTouched\0");
-        assert_eq!(bytes[0], expected);
-    }
-
-    #[test]
-    fn power_off_golden_bytes() {
-        let bytes = Command::PowerOff.encode(&layout()).unwrap();
-        assert_eq!(bytes.len(), 1);
-        // propertyChanged, path=[15], "powerOffRequest", var Bool(true).
-        let mut expected = vec![0x01, 0x01, 0x01, 0x01, 0x0f];
-        expected.extend_from_slice(b"powerOffRequest\0");
-        expected.extend_from_slice(&[0x01, 0x01, 0x02]); // var Bool(true)
-        assert_eq!(bytes[0], expected);
-    }
-
-    #[test]
-    fn link_callme_golden_bytes() {
-        // CallMe1 = protocol source 16, Headphone1 = protocol mix 0.
-        let bytes = Command::LinkCallMe {
-            source: Source::CallMe1,
-            mix: MixOutput::Headphone1,
-        }
-        .encode(&layout())
-        .unwrap();
-        assert_eq!(bytes.len(), 1);
-        // path[0] = (16<<8)|(4+0) = 4100 -> 2-byte compint `02 04 10`.
-        let mut expected = vec![0x01, 0x01, 0x01, 0x02, 0x04, 0x10];
-        expected.extend_from_slice(b"mixLinkRequest\0");
-        expected.extend_from_slice(&[0x01, 0x07, 0x08, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02]); // var Binary blob
-        assert_eq!(bytes[0], expected);
-    }
-
-    #[test]
-    fn unlink_callme_golden_bytes() {
-        // CallMe2 = protocol source 17, Headphone3 = protocol mix 2.
-        let bytes = Command::UnlinkCallMe {
-            source: Source::CallMe2,
-            mix: MixOutput::Headphone3,
-        }
-        .encode(&layout())
-        .unwrap();
-        assert_eq!(bytes.len(), 1);
-        // path[0] = (17<<8)|(4+2) = 4358 -> 2-byte compint `02 06 11`.
-        let mut expected = vec![0x01, 0x01, 0x01, 0x02, 0x06, 0x11];
-        expected.extend_from_slice(b"mixUnlinkRequest\0");
-        expected.extend_from_slice(&[0x01, 0x07, 0x08, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02]); // var Binary blob
-        assert_eq!(bytes[0], expected);
-    }
-}
+#[path = "commands_tests.rs"]
+mod tests;

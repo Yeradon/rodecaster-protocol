@@ -1,27 +1,6 @@
-//! Named Rodecaster entities: the typed vocabulary the public API speaks.
-//!
-//! ## Why names, not indices
-//!
-//! On the wire every entity is purely positional: a source is "the Nth
-//! `INPUTSOURCE` node", a mix cell is "source-major cell N", a fader is "the
-//! Nth `FADER` node". Those ordinals are an implementation detail of the JUCE
-//! tree, not a stable contract: they shift with firmware and differ across
-//! device models. This module pins each ordinal to a *named* entity
-//! ([`Source`], [`MixOutput`], [`Fader`]) so consumers address "Combo 1" or
-//! "Virtual 2", never a bare `7`.
-//!
-//! The name <-> ordinal mapping is irreducible reverse-engineering knowledge:
-//! the nodes carry no labels, so it cannot be recovered from a fullSync. It
-//! lives here as data.
-//!
-//! ## Per-model split
-//!
-//! [`Source`] (19) and [`MixOutput`] (13) are model-independent: the RODECaster
-//! Pro family shares one source/output vocabulary (one shared device picker).
-//! Only [`Fader`] differs: the Pro II exposes 6 physical + 3 virtual strips,
-//! the Duo 4 physical + 5 virtual. So the fader name <-> index map is
-//! parameterized by [`DeviceModel`], which [`crate::Layout`] detects from the
-//! fullSync's `SYSTEM` node.
+//! Model-independent core vocabulary: [`DeviceModel`], [`MixOutput`],
+//! [`Source`], and the model-parameterized [`Fader`]. These pin the wire's bare
+//! positional ordinals to named entities; see the [`super`] module docs for why.
 
 use std::fmt;
 use std::str::FromStr;

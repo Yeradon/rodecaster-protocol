@@ -64,7 +64,11 @@ pub use events::{decode_event, DeviceEvent};
 pub use frame::{frame_payload, scan_frame, FrameScan, Packet, MAGIC_HEADER};
 pub use juce_var::{read_value, Reader, Value};
 pub use layout::Layout;
-pub use names::{DeviceModel, Fader, MixOutput, Source};
+pub use names::{
+    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
+    InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
+    Source,
+};
 pub use valuetree::{parse_valuetree, Node, Property};
 
 /// Compile-time guarantee that the public types stay `Send + Sync` so
@@ -85,4 +89,15 @@ const _: () = {
     assert_send_sync::<Source>();
     assert_send_sync::<MixOutput>();
     assert_send_sync::<Fader>();
+    assert_send_sync::<ChannelParam>();
+    assert_send_sync::<InputSourceParam>();
+    assert_send_sync::<MasterParam>();
+    assert_send_sync::<OutputParam>();
+    assert_send_sync::<DuckerParam>();
+    assert_send_sync::<RecorderParam>();
+    assert_send_sync::<PlayerParam>();
+    assert_send_sync::<HeadphoneParam>();
+    assert_send_sync::<EffectsParam>();
+    assert_send_sync::<GuiParam>();
+    assert_send_sync::<PadParam>();
 };

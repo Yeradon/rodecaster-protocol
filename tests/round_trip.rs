@@ -16,7 +16,9 @@
 
 use rodecaster_protocol::{
     change_frame::{decode as decode_change_frame, encode_property_changed, ChangeFrame},
-    decode_event, Command, DeviceEvent, Fader, Layout, MixOutput, Node, Property, Source, Value,
+    decode_event, ChannelParam, Command, DeviceEvent, DuckerParam, EffectsParam, Fader, GuiParam,
+    HeadphoneParam, InputSourceParam, Layout, MasterParam, MixOutput, Node, OutputParam, PadParam,
+    PlayerParam, Property, RecorderParam, Source, Value,
 };
 
 fn n(name: &str) -> Node {
@@ -94,6 +96,31 @@ fn synthetic_root() -> Node {
             )],
         ));
     }
+    // 19 INPUTSOURCE nodes (addressable source run), property-less so they don't
+    // change the initial-state event count assertions below.
+    for _ in 0..19 {
+        children.push(n("INPUTSOURCE"));
+    }
+    // Singleton families, property-less for the same reason (no extra events).
+    children.push(n("MASTERCHANNEL"));
+    children.push(n("OUTPUT"));
+    children.push(n("DUCKER"));
+    children.push(n("RECORDER"));
+    children.push(n("PLAYER"));
+    // HEADPHONE is multi-instance; two at the tail (run length 2), property-less.
+    children.push(n("HEADPHONE"));
+    children.push(n("HEADPHONE"));
+    // EFFECTS_PARAMETERS is multi-instance; three at the tail (run length 3),
+    // property-less so the initial-state event count assertions are unaffected.
+    children.push(n("EFFECTS_PARAMETERS"));
+    children.push(n("EFFECTS_PARAMETERS"));
+    children.push(n("EFFECTS_PARAMETERS"));
+    // GUI is the single front-panel UI-state node (singleton), property-less so
+    // the initial-state event count assertions are unaffected.
+    children.push(n("GUI"));
+    // SOUNDPADS container with property-less PAD nodes, so the initial-state
+    // event count assertions are unaffected (pads carry no props here).
+    children.push(nc("SOUNDPADS", vec![n("PAD"), n("PAD")]));
     nc("DEVICE", children)
 }
 
@@ -175,6 +202,399 @@ fn round_trip_set_mix_disabled() {
             disabled: true,
         }
     );
+}
+
+#[test]
+fn round_trip_set_channel_param() {
+    let l = layout();
+    // Physical2 -> channel index 1. Unlike channelInputSource (which the device
+    // echoes at stride 6), the DSP strip params are stride-1 both ways, so the
+    // logical address survives the round-trip unchanged.
+    let cmd = Command::SetChannelParam {
+        fader: Fader::Physical2,
+        param: ChannelParam::EqHighGain,
+        value: Value::Double(6.0),
+    };
+    let payloads = cmd.encode(&l).unwrap();
+    assert_eq!(payloads.len(), 1);
+
+    let event = decode_event(&payloads[0], &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::ChannelParamChanged {
+            fader: Fader::Physical2,
+            param: ChannelParam::EqHighGain,
+            value: Value::Double(6.0),
+        }
+    );
+}
+
+#[test]
+fn round_trip_set_channel_param_preserves_every_value_shape() {
+    let l = layout();
+    // The JUCE wire is self-describing, so whatever Value type the caller picks
+    // survives byte-faithfully through encode -> decode. Covers each marker and
+    // the Other (untyped name) forward-compat path.
+    let cases = [
+        (ChannelParam::EqOn, Value::Bool(true)),
+        (ChannelParam::CompressorRatio, Value::Int(4)),
+        (ChannelParam::HpfFrequency, Value::Double(80.0)),
+        (
+            ChannelParam::Other("channelCustomLabel".to_string()),
+            Value::String("xlr".to_string()),
+        ),
+        (
+            ChannelParam::Other("channelMysteryKnob".to_string()),
+            Value::Int(3),
+        ),
+    ];
+    for (param, value) in cases {
+        let cmd = Command::SetChannelParam {
+            fader: Fader::Physical1,
+            param: param.clone(),
+            value: value.clone(),
+        };
+        let payloads = cmd.encode(&l).unwrap();
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::ChannelParamChanged {
+                fader: Fader::Physical1,
+                param,
+                value,
+            }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_input_source_param() {
+    let l = layout();
+    // Combo2 -> source ordinal 1 -> 2nd INPUTSOURCE node. INPUTSOURCE params are
+    // stride-1 both ways (no echo asymmetry), so the source survives unchanged.
+    let cmd = Command::SetInputSourceParam {
+        source: Source::Combo2,
+        param: InputSourceParam::InputMicrophoneGain,
+        value: Value::Int(50),
+    };
+    let payloads = cmd.encode(&l).unwrap();
+    assert_eq!(payloads.len(), 1);
+
+    let event = decode_event(&payloads[0], &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::InputSourceParamChanged {
+            source: Source::Combo2,
+            param: InputSourceParam::InputMicrophoneGain,
+            value: Value::Int(50),
+        }
+    );
+}
+
+#[test]
+fn round_trip_set_input_source_param_preserves_every_value_shape() {
+    let l = layout();
+    // Same self-describing-wire guarantee as the channel-param shape test, but on
+    // the INPUTSOURCE node. InputWirelessSn is genuinely a String on the device.
+    let cases = [
+        (InputSourceParam::InputPower, Value::Int(1)),
+        (InputSourceParam::InputPhaseFlip, Value::Bool(true)),
+        (
+            InputSourceParam::InputWirelessSn,
+            Value::String("SN12345".to_string()),
+        ),
+        (
+            InputSourceParam::Other("inputMysteryFlag".to_string()),
+            Value::Int(7),
+        ),
+    ];
+    for (param, value) in cases {
+        let cmd = Command::SetInputSourceParam {
+            source: Source::Combo1,
+            param: param.clone(),
+            value: value.clone(),
+        };
+        let payloads = cmd.encode(&l).unwrap();
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::InputSourceParamChanged {
+                source: Source::Combo1,
+                param,
+                value,
+            }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_master_param() {
+    let l = layout();
+    // Key-less singleton: the master Compellor threshold, a Double, must land on
+    // the MASTERCHANNEL node and decode back to the same key-less event.
+    let cmd = Command::SetMasterParam {
+        param: MasterParam::CompellorThreshold,
+        value: Value::Double(0.67),
+    };
+    let payloads = cmd.encode(&l).unwrap();
+    assert_eq!(payloads.len(), 1);
+
+    let event = decode_event(&payloads[0], &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::MasterParamChanged {
+            param: MasterParam::CompellorThreshold,
+            value: Value::Double(0.67),
+        }
+    );
+}
+
+#[test]
+fn round_trip_set_output_param() {
+    let l = layout();
+    let cmd = Command::SetOutputParam {
+        param: OutputParam::MonLevel,
+        value: Value::Double(0.0),
+    };
+    let payloads = cmd.encode(&l).unwrap();
+    assert_eq!(payloads.len(), 1);
+
+    let event = decode_event(&payloads[0], &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::OutputParamChanged {
+            param: OutputParam::MonLevel,
+            value: Value::Double(0.0),
+        }
+    );
+}
+
+#[test]
+fn round_trip_set_master_and_output_params_preserve_every_value_shape() {
+    let l = layout();
+    // Same self-describing-wire guarantee on the two singleton nodes, including
+    // each marker type and the Other (untyped name) forward-compat path.
+    let master_cases = [
+        (MasterParam::CompellorOn, Value::Bool(true)),
+        (MasterParam::DelaySeconds, Value::Double(0.25)),
+        (
+            MasterParam::Other("masterMysteryKnob".to_string()),
+            Value::Int(3),
+        ),
+    ];
+    for (param, value) in master_cases {
+        let payloads = Command::SetMasterParam {
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::MasterParamChanged { param, value }
+        );
+    }
+
+    let output_cases = [
+        (OutputParam::MonMute, Value::Bool(false)),
+        (OutputParam::MultiMode, Value::Int(5)),
+        (OutputParam::BtLevel, Value::Double(0.5)),
+        (
+            OutputParam::Other("outputMysteryFlag".to_string()),
+            Value::Int(9),
+        ),
+    ];
+    for (param, value) in output_cases {
+        let payloads = Command::SetOutputParam {
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::OutputParamChanged { param, value }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_ducker_recorder_player_params() {
+    let l = layout();
+
+    let payloads = Command::SetDuckerParam {
+        param: DuckerParam::Depth,
+        value: Value::Double(-9.0),
+    }
+    .encode(&l)
+    .unwrap();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        decode_event(&payloads[0], &l).unwrap(),
+        DeviceEvent::DuckerParamChanged {
+            param: DuckerParam::Depth,
+            value: Value::Double(-9.0),
+        }
+    );
+
+    // The recorder command channel: requestRecordState round-trips as an event.
+    let payloads = Command::SetRecorderParam {
+        param: RecorderParam::RequestRecordState,
+        value: Value::Int(1),
+    }
+    .encode(&l)
+    .unwrap();
+    assert_eq!(
+        decode_event(&payloads[0], &l).unwrap(),
+        DeviceEvent::RecorderParamChanged {
+            param: RecorderParam::RequestRecordState,
+            value: Value::Int(1),
+        }
+    );
+
+    let payloads = Command::SetPlayerParam {
+        param: PlayerParam::State,
+        value: Value::Int(0),
+    }
+    .encode(&l)
+    .unwrap();
+    assert_eq!(
+        decode_event(&payloads[0], &l).unwrap(),
+        DeviceEvent::PlayerParamChanged {
+            param: PlayerParam::State,
+            value: Value::Int(0),
+        }
+    );
+}
+
+#[test]
+fn round_trip_set_headphone_param_preserves_index_and_value_shape() {
+    let l = layout();
+    // Each headphone index + each value marker, including the Other path, must
+    // survive encode -> decode addressed to the same jack.
+    let cases = [
+        (0u8, HeadphoneParam::Type, Value::Int(0)),
+        (
+            1u8,
+            HeadphoneParam::Colour,
+            Value::String("ffd43580".into()),
+        ),
+        (
+            1u8,
+            HeadphoneParam::Other("headphoneMystery".to_string()),
+            Value::Bool(true),
+        ),
+    ];
+    for (headphone, param, value) in cases {
+        let payloads = Command::SetHeadphoneParam {
+            headphone,
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::HeadphoneParamChanged {
+                headphone,
+                param,
+                value,
+            }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_effects_param_preserves_index_and_value_shape() {
+    let l = layout();
+    // Each effects slot index + each value marker, including the Other path, must
+    // survive encode -> decode addressed to the same slot. EFFECTS_PARAMETERS is
+    // stride-1 both ways (no echo asymmetry), so the slot index is preserved.
+    let cases = [
+        (0u8, EffectsParam::ReverbOn, Value::Bool(true)),
+        (1u8, EffectsParam::EchoMix, Value::Double(0.25)),
+        (2u8, EffectsParam::PitchShiftSemitones, Value::Int(-3)),
+        (
+            2u8,
+            EffectsParam::Other("flangerDepth".to_string()),
+            Value::Double(0.8),
+        ),
+    ];
+    for (effects, param, value) in cases {
+        let payloads = Command::SetEffectsParam {
+            effects,
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::EffectsParamChanged {
+                effects,
+                param,
+                value,
+            }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_gui_param_preserves_value_shape() {
+    let l = layout();
+    // GUI is a key-less singleton: each value marker, including the Other path,
+    // must survive encode -> decode on the single GUI node.
+    let cases = [
+        (GuiParam::Lang, Value::String("en".to_string())),
+        (GuiParam::ScreenBrightness, Value::Int(250)),
+        (GuiParam::BroadcastMeters, Value::Bool(false)),
+        (GuiParam::Other("mysteryGuiKnob".to_string()), Value::Int(7)),
+    ];
+    for (param, value) in cases {
+        let payloads = Command::SetGuiParam {
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::GuiParamChanged { param, value }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_pad_param_preserves_index_and_value_shape() {
+    let l = layout();
+    // PAD is two-level indexed: the pad index and each value marker (including
+    // the Other path) must survive encode -> decode on the addressed PAD node.
+    let cases = [
+        (0u8, PadParam::Name, Value::String("Applause".to_string())),
+        (1, PadParam::ColourIndex, Value::Int(7)),
+        (1, PadParam::Gain, Value::Double(0.5)),
+        (0, PadParam::Loop, Value::Bool(true)),
+        (
+            1,
+            PadParam::Other("padMysteryKnob".to_string()),
+            Value::Int(3),
+        ),
+    ];
+    for (pad, param, value) in cases {
+        let payloads = Command::SetPadParam {
+            pad,
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::PadParamChanged { pad, param, value }
+        );
+    }
 }
 
 #[test]
