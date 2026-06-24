@@ -275,9 +275,10 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
             if child.name != "FADER" {
                 continue;
             }
-            if let (Some(fader), Some(level)) =
-                (Fader::from_index(model, fader_idx), int_prop(child, "faderLevel"))
-            {
+            if let (Some(fader), Some(level)) = (
+                Fader::from_index(model, fader_idx),
+                int_prop(child, "faderLevel"),
+            ) {
                 out.push(DeviceEvent::FaderLevelChanged {
                     fader,
                     level: level.clamp(0, 127) as u8,
@@ -330,11 +331,13 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
         let source_idx = (mix_counter / per_source) as u8;
         let mix_idx = (mix_counter % per_source) as u8;
         mix_counter += 1;
-        let (source, mix) =
-            match (Source::from_protocol(source_idx), MixOutput::from_protocol(mix_idx)) {
-                (Some(s), Some(m)) => (s, m),
-                _ => continue,
-            };
+        let (source, mix) = match (
+            Source::from_protocol(source_idx),
+            MixOutput::from_protocol(mix_idx),
+        ) {
+            (Some(s), Some(m)) => (s, m),
+            _ => continue,
+        };
         if let Some(level_s) = string_prop(child, "mixLevelWithAnchor") {
             if let Some((anchor, value)) = parse_mix_level(level_s) {
                 out.push(DeviceEvent::MixLevelChanged {
@@ -549,7 +552,12 @@ mod tests {
         let l = layout();
         let payload = encode_property_changed(&[1u32], "encoderSignal", &Value::Int(1));
         let event = decode_event(&payload, &l).unwrap();
-        assert_eq!(event, DeviceEvent::FaderTouched { fader: Fader::Physical2 });
+        assert_eq!(
+            event,
+            DeviceEvent::FaderTouched {
+                fader: Fader::Physical2
+            }
+        );
     }
 
     #[test]

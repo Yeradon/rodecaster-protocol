@@ -179,7 +179,9 @@ impl FromStr for MixOutput {
             "callme1" | "cm1" => Ok(Self::CallMe1),
             "callme2" | "cm2" => Ok(Self::CallMe2),
             "callme3" | "cm3" => Ok(Self::CallMe3),
-            _ => Err(format!("unknown mix output: {s} (try: hp1, speaker, bt, cm1)")),
+            _ => Err(format!(
+                "unknown mix output: {s} (try: hp1, speaker, bt, cm1)"
+            )),
         }
     }
 }
@@ -553,7 +555,10 @@ mod tests {
         // No board, no name -> default Pro II (matches fw 1.6.8 captures).
         assert_eq!(DeviceModel::detect(None, None), DeviceModel::Pro2);
         // Name only.
-        assert_eq!(DeviceModel::detect(None, Some("Some Duo")), DeviceModel::Duo);
+        assert_eq!(
+            DeviceModel::detect(None, Some("Some Duo")),
+            DeviceModel::Duo
+        );
         assert_eq!(DeviceModel::detect(None, Some("Pro II")), DeviceModel::Pro2);
     }
 
@@ -637,11 +642,20 @@ mod tests {
         for s in sources {
             assert_eq!(s.to_string().parse::<Source>(), Ok(s));
         }
-        let mixes = [MixOutput::Headphone1, MixOutput::Speaker, MixOutput::CallMe2];
+        let mixes = [
+            MixOutput::Headphone1,
+            MixOutput::Speaker,
+            MixOutput::CallMe2,
+        ];
         for m in mixes {
             assert_eq!(m.to_string().parse::<MixOutput>(), Ok(m));
         }
-        let faders = [Fader::Physical1, Fader::Physical6, Fader::Virtual1, Fader::Virtual5];
+        let faders = [
+            Fader::Physical1,
+            Fader::Physical6,
+            Fader::Virtual1,
+            Fader::Virtual5,
+        ];
         for fd in faders {
             assert_eq!(fd.to_string().parse::<Fader>(), Ok(fd));
         }

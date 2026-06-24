@@ -15,10 +15,22 @@ use crate::juce_var::Value;
 use crate::layout::Layout;
 use crate::names::{DeviceModel, Fader, MixOutput, Source};
 
-/// Binary "request" blob the device expects for `mixLinkRequest` /
-/// `mixUnlinkRequest`. Verified verbatim against the server's existing
-/// encoders + the device's parser.
-const MIX_LINK_REQUEST_BLOB: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02];
+/// Mix link/unlink request *pulses*. The device toggles a routing cell with a
+/// two-frame pulse on `mixLinkRequest` / `mixUnlinkRequest`. Each 6-byte blob is
+/// two JUCE bools `[trigger, state]` (02 = true, 03 = false): the press carries
+/// `trigger=true` + the PRIOR link state, the release carries `trigger=false` +
+/// the NEW state. Captured from the device touchscreen and validated on hardware
+/// (probe-link8): replaying these links/unlinks a cell exactly like native.
+const MIX_LINK_PRESS: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x03]; // trigger=true, prior=unlinked
+const MIX_LINK_RELEASE: [u8; 6] = [0x01, 0x01, 0x03, 0x01, 0x01, 0x02]; // trigger=false, new=linked
+const MIX_UNLINK_PRESS: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02]; // trigger=true, prior=linked
+const MIX_UNLINK_RELEASE: [u8; 6] = [0x01, 0x01, 0x03, 0x01, 0x01, 0x03]; // trigger=false, new=unlinked
+
+/// CallMe return channels are toggled with a single legacy request blob (the
+/// `(trigger=true, state=true)` form). CallMe sits outside the mix matrix on a
+/// dedicated request path and has NOT been re-captured for the press/release
+/// pulse, so it keeps the original single-frame behavior until validated.
+const CALLME_REQUEST_BLOB: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02];
 
 /// JUCE `Int` value used to mean "unassigned" for `channelInputSource`.
 /// The device treats negative source ids as "no source"; on the wire JUCE's
@@ -77,18 +89,32 @@ pub enum Command {
     /// Physical fader levels come from hardware over MIDI/UART, not this path.
     SetFaderLevel { fader: Fader, level: u8 },
     /// Assign (or clear, with `None`) the input source for a fader strip.
-    AssignFaderSource { fader: Fader, source: Option<Source> },
+    AssignFaderSource {
+        fader: Fader,
+        source: Option<Source>,
+    },
     /// Enable or disable a routing matrix cell.
     SetMixDisabled {
         source: Source,
         mix: MixOutput,
         disabled: bool,
     },
-    /// Link a routing matrix cell. The device requires two packets in order:
-    /// enable first (`mixDisabled=false`), then `mixLinkRequest`. `encode`
-    /// returns both.
+    /// Mute or unmute a routing matrix cell. This is the per-cell `mixMute`,
+    /// distinct from the per-strip [`Command::SetFaderMute`]. The device clears
+    /// it as part of a native link; exposed on its own so callers can compose.
+    SetMixMute {
+        source: Source,
+        mix: MixOutput,
+        mute: bool,
+    },
+    /// Link a routing matrix cell, mirroring the device touchscreen exactly:
+    /// enable (`mixDisabled=false`), unmute (`mixMute=false`), then a two-frame
+    /// `mixLinkRequest` press/release pulse. `encode` returns all four frames in
+    /// order. The atomic halves are also callable on their own as
+    /// [`Command::SetMixDisabled`] and [`Command::SetMixMute`].
     LinkMix { source: Source, mix: MixOutput },
-    /// Unlink a routing matrix cell.
+    /// Unlink a routing matrix cell with the device's two-frame
+    /// `mixUnlinkRequest` press/release pulse.
     UnlinkMix { source: Source, mix: MixOutput },
     /// Wake the device display. A fixed, layout-independent message; see
     /// [`SCREEN_TOUCHED_FRAME`].
@@ -98,8 +124,8 @@ pub enum Command {
     /// Link a CallMe return channel into a mix. `source` must be a CallMe
     /// source ([`Source::CallMe1`]..=[`Source::CallMe3`]); on firmware where
     /// CallMe sits outside the mix matrix it is addressed by a dedicated
-    /// request path, so this sends a single `mixLinkRequest` (no preceding
-    /// enable, unlike [`Command::LinkMix`]).
+    /// request path, so this sends a single legacy `mixLinkRequest` blob (no
+    /// enable/unmute or press/release pulse, unlike [`Command::LinkMix`]).
     LinkCallMe { source: Source, mix: MixOutput },
     /// Unlink a CallMe return channel from a mix. See [`Command::LinkCallMe`].
     UnlinkCallMe { source: Source, mix: MixOutput },
@@ -160,29 +186,53 @@ impl Command {
                     &Value::Bool(*disabled),
                 )])
             }
+            Command::SetMixMute { source, mix, mute } => {
+                let path = mix_path(layout, *source, *mix)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    "mixMute",
+                    &Value::Bool(*mute),
+                )])
+            }
             Command::LinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
+                // Device-exact link (touchscreen-faithful): enable, then unmute,
+                // then a mixLinkRequest press/release pulse. The two state writes
+                // use the same wire form as SetMixDisabled / SetMixMute.
                 Ok(vec![
-                    // Enable first so a previously-Disabled cell receives the link.
                     change_frame::encode_property_changed(
                         &path,
                         "mixDisabled",
                         &Value::Bool(false),
                     ),
+                    change_frame::encode_property_changed(&path, "mixMute", &Value::Bool(false)),
                     change_frame::encode_property_changed(
                         &path,
                         "mixLinkRequest",
-                        &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
+                        &Value::Binary(MIX_LINK_PRESS.to_vec()),
+                    ),
+                    change_frame::encode_property_changed(
+                        &path,
+                        "mixLinkRequest",
+                        &Value::Binary(MIX_LINK_RELEASE.to_vec()),
                     ),
                 ])
             }
             Command::UnlinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    "mixUnlinkRequest",
-                    &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
-                )])
+                // Device-exact unlink: mixUnlinkRequest press/release pulse.
+                Ok(vec![
+                    change_frame::encode_property_changed(
+                        &path,
+                        "mixUnlinkRequest",
+                        &Value::Binary(MIX_UNLINK_PRESS.to_vec()),
+                    ),
+                    change_frame::encode_property_changed(
+                        &path,
+                        "mixUnlinkRequest",
+                        &Value::Binary(MIX_UNLINK_RELEASE.to_vec()),
+                    ),
+                ])
             }
             Command::ScreenTouched => Ok(vec![SCREEN_TOUCHED_FRAME.to_vec()]),
             Command::PowerOff => Ok(vec![change_frame::encode_property_changed(
@@ -193,13 +243,13 @@ impl Command {
             Command::LinkCallMe { source, mix } => Ok(vec![change_frame::encode_property_changed(
                 &callme_request_path(*source, *mix),
                 "mixLinkRequest",
-                &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
+                &Value::Binary(CALLME_REQUEST_BLOB.to_vec()),
             )]),
             Command::UnlinkCallMe { source, mix } => {
                 Ok(vec![change_frame::encode_property_changed(
                     &callme_request_path(*source, *mix),
                     "mixUnlinkRequest",
-                    &Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()),
+                    &Value::Binary(CALLME_REQUEST_BLOB.to_vec()),
                 )])
             }
         }
@@ -266,10 +316,7 @@ pub enum EncodeError {
     },
     /// The named fader strip does not exist on this device model (e.g.
     /// `Physical6` on a Duo, or `Virtual4` on a Pro II).
-    FaderNotOnModel {
-        fader: Fader,
-        model: DeviceModel,
-    },
+    FaderNotOnModel { fader: Fader, model: DeviceModel },
 }
 
 impl std::fmt::Display for EncodeError {
@@ -424,8 +471,8 @@ mod tests {
     fn set_mix_disabled_addresses_source_major_cell() {
         let l = layout();
         let bytes = Command::SetMixDisabled {
-            source: Source::Combo2,     // protocol index 1
-            mix: MixOutput::Recording,  // protocol index 5
+            source: Source::Combo2,    // protocol index 1
+            mix: MixOutput::Recording, // protocol index 5
             disabled: true,
         }
         .encode(&l)
@@ -442,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn link_mix_emits_enable_then_link_request_in_order() {
+    fn link_mix_emits_device_exact_sequence() {
         let l = layout();
         let bytes = Command::LinkMix {
             source: Source::Combo1,
@@ -450,29 +497,31 @@ mod tests {
         }
         .encode(&l)
         .unwrap();
-        assert_eq!(bytes.len(), 2, "link emits two payloads");
+        assert_eq!(
+            bytes.len(),
+            4,
+            "link emits enable + unmute + press + release"
+        );
 
-        let first = decode(&bytes[0]).unwrap();
-        let second = decode(&bytes[1]).unwrap();
-
-        match first {
-            ChangeFrame::PropertyChanged { name, value, .. } => {
-                assert_eq!(name, "mixDisabled");
-                assert_eq!(value, Value::Bool(false), "first packet enables the cell");
+        let expect = [
+            ("mixDisabled", Value::Bool(false)),
+            ("mixMute", Value::Bool(false)),
+            ("mixLinkRequest", Value::Binary(MIX_LINK_PRESS.to_vec())),
+            ("mixLinkRequest", Value::Binary(MIX_LINK_RELEASE.to_vec())),
+        ];
+        for (raw, (exp_name, exp_val)) in bytes.iter().zip(expect.iter()) {
+            match decode(raw).unwrap() {
+                ChangeFrame::PropertyChanged { name, value, .. } => {
+                    assert_eq!(&name, exp_name);
+                    assert_eq!(&value, exp_val);
+                }
+                _ => panic!("wrong variant"),
             }
-            _ => panic!("first packet wrong variant"),
-        }
-        match second {
-            ChangeFrame::PropertyChanged { name, value, .. } => {
-                assert_eq!(name, "mixLinkRequest");
-                assert_eq!(value, Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()));
-            }
-            _ => panic!("second packet wrong variant"),
         }
     }
 
     #[test]
-    fn unlink_mix_emits_single_unlink_request() {
+    fn unlink_mix_emits_press_release_pulse() {
         let l = layout();
         let bytes = Command::UnlinkMix {
             source: Source::Combo1,
@@ -480,12 +529,40 @@ mod tests {
         }
         .encode(&l)
         .unwrap();
+        assert_eq!(bytes.len(), 2, "unlink emits press + release");
+
+        let expect = [
+            Value::Binary(MIX_UNLINK_PRESS.to_vec()),
+            Value::Binary(MIX_UNLINK_RELEASE.to_vec()),
+        ];
+        for (raw, exp_val) in bytes.iter().zip(expect.iter()) {
+            match decode(raw).unwrap() {
+                ChangeFrame::PropertyChanged { name, value, .. } => {
+                    assert_eq!(name, "mixUnlinkRequest");
+                    assert_eq!(&value, exp_val);
+                }
+                _ => panic!("wrong variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn set_mix_mute_addresses_cell() {
+        let l = layout();
+        let bytes = Command::SetMixMute {
+            source: Source::Combo2,    // protocol index 1
+            mix: MixOutput::Recording, // protocol index 5
+            mute: true,
+        }
+        .encode(&l)
+        .unwrap();
         assert_eq!(bytes.len(), 1);
         let frame = decode(&bytes[0]).unwrap();
         match frame {
-            ChangeFrame::PropertyChanged { name, value, .. } => {
-                assert_eq!(name, "mixUnlinkRequest");
-                assert_eq!(value, Value::Binary(MIX_LINK_REQUEST_BLOB.to_vec()));
+            ChangeFrame::PropertyChanged { path, name, value } => {
+                assert_eq!(path, l.mix_cell_path(1, 5).unwrap());
+                assert_eq!(name, "mixMute");
+                assert_eq!(value, Value::Bool(true));
             }
             _ => panic!("wrong variant"),
         }
@@ -514,7 +591,7 @@ mod tests {
     #[test]
     fn fader_not_on_model_returns_error_not_panic() {
         let l = layout(); // Pro II (no SYSTEM node)
-        // Virtual4 only exists on the Duo.
+                          // Virtual4 only exists on the Duo.
         let err = Command::SetFaderMute {
             fader: Fader::Virtual4,
             mute: true,

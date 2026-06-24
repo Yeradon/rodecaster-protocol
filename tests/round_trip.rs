@@ -178,19 +178,18 @@ fn round_trip_set_mix_disabled() {
 }
 
 #[test]
-fn round_trip_link_mix_emits_two_decodable_events() {
+fn round_trip_link_mix_emits_device_exact_sequence() {
     let l = layout();
     let cmd = Command::LinkMix {
         source: Source::Combo1,
         mix: MixOutput::Speaker,
     };
     let payloads = cmd.encode(&l).unwrap();
-    assert_eq!(payloads.len(), 2);
+    assert_eq!(payloads.len(), 4, "enable + unmute + link press + release");
 
-    // First payload: enable (mixDisabled = false). Decodes as MixDisabledChanged.
-    let first = decode_event(&payloads[0], &l).unwrap();
+    // [0] enable (mixDisabled = false) -> MixDisabledChanged.
     assert_eq!(
-        first,
+        decode_event(&payloads[0], &l).unwrap(),
         DeviceEvent::MixDisabledChanged {
             source: Source::Combo1,
             mix: MixOutput::Speaker,
@@ -198,13 +197,23 @@ fn round_trip_link_mix_emits_two_decodable_events() {
         }
     );
 
-    // Second payload: mixLinkRequest. Not a typed event in v0.2; surfaces as Unknown.
-    let second = decode_event(&payloads[1], &l).unwrap();
-    match second {
-        DeviceEvent::Unknown { prop_name, .. } => {
-            assert_eq!(prop_name, "mixLinkRequest");
+    // [1] unmute (mixMute = false) -> MixMuteChanged.
+    assert_eq!(
+        decode_event(&payloads[1], &l).unwrap(),
+        DeviceEvent::MixMuteChanged {
+            source: Source::Combo1,
+            mix: MixOutput::Speaker,
+            muted: false,
         }
-        other => panic!("expected Unknown for mixLinkRequest, got {other:?}"),
+    );
+
+    // [2],[3] mixLinkRequest press/release: a Binary request, not a typed state
+    // event, so each surfaces as Unknown.
+    for p in &payloads[2..] {
+        match decode_event(p, &l).unwrap() {
+            DeviceEvent::Unknown { prop_name, .. } => assert_eq!(prop_name, "mixLinkRequest"),
+            other => panic!("expected Unknown for mixLinkRequest, got {other:?}"),
+        }
     }
 }
 
