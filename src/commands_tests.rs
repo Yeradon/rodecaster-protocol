@@ -59,6 +59,9 @@ fn synthetic_root() -> Node {
         "SOUNDPADS",
         vec![n("PADHEADER"), n("PAD"), n("PAD"), n("PAD")],
     ));
+    // SYSTEM is the single device-wide state node (singleton) at the tail. It
+    // carries no boardType/systemName here, so model detection stays Pro II.
+    children.push(n("SYSTEM"));
     nc("DEVICE", children)
 }
 
@@ -69,7 +72,7 @@ fn layout() -> Layout {
 #[test]
 fn set_fader_mute_encodes_juce_property_changed() {
     let l = layout();
-    // Pro II model (no SYSTEM node): Physical2 -> fader index 1.
+    // Pro II model (empty SYSTEM node -> default): Physical2 -> fader index 1.
     let bytes = Command::SetFaderMute {
         fader: Fader::Physical2,
         mute: true,
@@ -667,6 +670,49 @@ fn set_gui_param_other_emits_raw_name() {
 }
 
 #[test]
+fn set_system_param_addresses_system_path() {
+    let l = layout();
+    // A quirky-cased update flag, a Bool, on the single SYSTEM node.
+    let bytes = Command::SetSystemParam {
+        param: SystemParam::UpdateViaUsb,
+        value: Value::Bool(true),
+    }
+    .encode(&l)
+    .unwrap();
+    assert_eq!(bytes.len(), 1);
+    let frame = decode(&bytes[0]).unwrap();
+    match frame {
+        ChangeFrame::PropertyChanged { path, name, value } => {
+            assert_eq!(path, l.system_path().unwrap());
+            // The variant's wire name keeps the firmware's USB casing verbatim.
+            assert_eq!(name, "updateViaUSB");
+            assert_eq!(value, Value::Bool(true));
+        }
+        _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
+fn set_system_param_other_emits_raw_name() {
+    let l = layout();
+    let bytes = Command::SetSystemParam {
+        param: SystemParam::Other("mysterySystemFlag".to_string()),
+        value: Value::Int(7),
+    }
+    .encode(&l)
+    .unwrap();
+    let frame = decode(&bytes[0]).unwrap();
+    match frame {
+        ChangeFrame::PropertyChanged { path, name, value } => {
+            assert_eq!(path, l.system_path().unwrap());
+            assert_eq!(name, "mysterySystemFlag");
+            assert_eq!(value, Value::Int(7));
+        }
+        _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
 fn set_pad_param_addresses_indexed_path() {
     let l = layout();
     // Pad index 2 -> the third PAD node inside SOUNDPADS (two-level path).
@@ -764,6 +810,38 @@ fn set_gui_param_absent_node_returns_missing_node_error() {
 }
 
 #[test]
+fn set_system_param_absent_node_returns_missing_node_error() {
+    // A layout from a tree with no SYSTEM node: encoding must error with the
+    // family-specific MissingNode, never panic or misroute.
+    fn nc(name: &str, children: Vec<Node>) -> Node {
+        Node {
+            name: name.to_string(),
+            properties: vec![],
+            children,
+        }
+    }
+    fn n(name: &str) -> Node {
+        nc(name, vec![])
+    }
+    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
+    let mut children = vec![phys, n("CHANNEL")];
+    for _ in 0..13 {
+        children.push(n("MIX"));
+    }
+    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+
+    assert_eq!(
+        Command::SetSystemParam {
+            param: SystemParam::PowerOffRequest,
+            value: Value::Bool(true),
+        }
+        .encode(&l)
+        .unwrap_err(),
+        EncodeError::MissingNode { what: "SYSTEM" }
+    );
+}
+
+#[test]
 fn set_ducker_recorder_player_absent_node_return_missing_node_error() {
     // A layout from a tree with none of the new singletons: encoding must
     // error with the family-specific MissingNode, never panic or misroute.
@@ -855,7 +933,7 @@ fn out_of_range_fader_returns_error_not_panic() {
 
 #[test]
 fn fader_not_on_model_returns_error_not_panic() {
-    let l = layout(); // Pro II (no SYSTEM node)
+    let l = layout(); // Pro II (empty SYSTEM node -> default)
                       // Virtual4 only exists on the Duo.
     let err = Command::SetFaderMute {
         fader: Fader::Virtual4,

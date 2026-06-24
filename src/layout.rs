@@ -38,9 +38,9 @@ pub const MIX_COUNT_PER_SOURCE: u8 = 13;
 
 /// One addressable singleton node (no index): its tree position, or absent.
 ///
-/// `MASTERCHANNEL`, `OUTPUT`, `DUCKER`, `RECORDER`, `PLAYER` and `GUI` are all
-/// one-of-a-kind nodes addressed purely by position. `None` means the fullSync
-/// did not carry the node (synthetic or partial trees).
+/// `MASTERCHANNEL`, `OUTPUT`, `DUCKER`, `RECORDER`, `PLAYER`, `GUI` and `SYSTEM`
+/// are all one-of-a-kind nodes addressed purely by position. `None` means the
+/// fullSync did not carry the node (synthetic or partial trees).
 #[derive(Debug, Clone, PartialEq)]
 struct Singleton {
     idx: Option<u32>,
@@ -166,14 +166,16 @@ pub struct Layout {
     input_source: Indexed,
     headphone: Indexed,
     effects: Indexed,
-    // MASTERCHANNEL / OUTPUT / DUCKER / RECORDER / PLAYER / GUI: root singletons,
-    // each addressed by position with no index. Optional for the same reason.
+    // MASTERCHANNEL / OUTPUT / DUCKER / RECORDER / PLAYER / GUI / SYSTEM: root
+    // singletons, each addressed by position with no index. Optional for the
+    // same reason.
     master_channel: Singleton,
     output: Singleton,
     ducker: Singleton,
     recorder: Singleton,
     player: Singleton,
     gui: Singleton,
+    system: Singleton,
     // PAD under SOUNDPADS: an optional two-level run (mirrors FADER). The
     // container can exist with zero pads, so its presence is tracked separately
     // from the run length.
@@ -250,9 +252,9 @@ impl Layout {
         // tree; only the root run is counted here.
         let effects = discover_run(root, "EFFECTS_PARAMETERS");
 
-        // MASTERCHANNEL, OUTPUT, DUCKER, RECORDER, PLAYER and GUI are singletons
-        // under root; record each position if present (None on synthetic/partial
-        // trees).
+        // MASTERCHANNEL, OUTPUT, DUCKER, RECORDER, PLAYER, GUI and SYSTEM are
+        // singletons under root; record each position if present (None on
+        // synthetic/partial trees).
         let master_channel = Singleton {
             idx: position_of_named_child(root, "MASTERCHANNEL"),
         };
@@ -270,6 +272,12 @@ impl Layout {
         };
         let gui = Singleton {
             idx: position_of_named_child(root, "GUI"),
+        };
+        // SYSTEM is the device-wide state singleton. `detect_model` reads the
+        // same node by name independently; this records its position so SYSTEM
+        // properties are addressable like any other singleton family.
+        let system = Singleton {
+            idx: position_of_named_child(root, "SYSTEM"),
         };
 
         // SOUNDPADS container under root (optional). Inside it, PAD nodes form a
@@ -314,6 +322,7 @@ impl Layout {
             recorder,
             player,
             gui,
+            system,
             pad,
         })
     }
@@ -402,6 +411,10 @@ impl Layout {
     /// Index of the single `GUI` (front-panel UI state) node under root, if present.
     pub fn gui(&self) -> Option<u32> {
         self.gui.idx
+    }
+    /// Index of the single `SYSTEM` (device-wide state) node under root, if present.
+    pub fn system(&self) -> Option<u32> {
+        self.system.idx
     }
     /// Index of the `SOUNDPADS` container node under root, if present.
     pub fn soundpads(&self) -> Option<u32> {
@@ -527,6 +540,18 @@ impl Layout {
     /// True if this single-level path points at the `GUI` node.
     pub fn is_gui_path(&self, path: &[u32]) -> bool {
         self.gui.is_path(path)
+    }
+
+    /// Root-down path to the single `SYSTEM` node, if present. No index: there is
+    /// exactly one device-wide state node. Used for the system* / update* /
+    /// download* / disableAll* / usb* / share* properties.
+    pub fn system_path(&self) -> Option<Vec<u32>> {
+        self.system.path()
+    }
+
+    /// True if this single-level path points at the `SYSTEM` node.
+    pub fn is_system_path(&self, path: &[u32]) -> bool {
+        self.system.is_path(path)
     }
 
     /// Root-down path to the `n`th `HEADPHONE` node (single-level). `n` is the

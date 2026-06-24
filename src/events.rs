@@ -26,7 +26,7 @@ use crate::layout::Layout;
 use crate::names::{
     ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
     InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
-    Source,
+    Source, SystemParam,
 };
 use crate::valuetree::Node;
 
@@ -193,6 +193,19 @@ pub enum DeviceEvent {
     PadParamChanged {
         pad: u8,
         param: PadParam,
+        value: Value,
+    },
+
+    /// A device-wide system parameter changed (identity, the firmware-update +
+    /// download lifecycle, date/time + personalization settings, the global
+    /// output disables, or USB / storage / sharing status), on the single root
+    /// `SYSTEM` node. Key-less: there is exactly one SYSTEM node. `param` is the
+    /// typed property identity ([`SystemParam`]); an un-typed property arrives as
+    /// [`SystemParam::Other`]. The `powerOffRequest` readback surfaces here as
+    /// [`SystemParam::PowerOffRequest`], distinct from the dedicated
+    /// [`crate::Command::PowerOff`] write frame.
+    SystemParamChanged {
+        param: SystemParam,
         value: Value,
     },
 
@@ -443,6 +456,10 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
             param: PadParam::from_name(name),
             value,
         },
+        (Some(ParamTarget::System), Some(value)) => DeviceEvent::SystemParamChanged {
+            param: SystemParam::from_name(name),
+            value,
+        },
         (_, value) => DeviceEvent::Unknown {
             prop_name: name.to_string(),
             path: path.to_vec(),
@@ -466,6 +483,7 @@ enum ParamTarget {
     Effects(u8),
     Gui,
     Pad(u8),
+    System,
 }
 
 /// Resolve a property path to its addressable node family, if any. The node
@@ -533,6 +551,10 @@ fn resolve_param_target(
     // PAD: multi-instance, one node per sound pad inside SOUNDPADS (two-level).
     if let Some(pad) = layout.pad_index_from_path(path) {
         return Some(ParamTarget::Pad(pad));
+    }
+    // SYSTEM: the single device-wide state node.
+    if layout.is_system_path(path) {
+        return Some(ParamTarget::System);
     }
     None
 }
@@ -824,6 +846,20 @@ pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
                     value: p.value.clone(),
                 });
             }
+        }
+    }
+
+    // 11. SYSTEM initial params (singleton). Same key-less shape as the other
+    // singletons: emit every property the single device-wide state node carries
+    // as a typed SystemParamChanged (identity, update lifecycle, date/time,
+    // disables, USB/storage/sharing status). `boardType` surfaces here too, the
+    // same value `Layout::detect_model` reads to pick the device model.
+    if let Some(node) = root.children.iter().find(|c| c.name == "SYSTEM") {
+        for p in &node.properties {
+            out.push(DeviceEvent::SystemParamChanged {
+                param: SystemParam::from_name(&p.name),
+                value: p.value.clone(),
+            });
         }
     }
 

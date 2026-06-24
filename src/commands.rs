@@ -16,7 +16,7 @@ use crate::layout::Layout;
 use crate::names::{
     ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
     InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
-    Source,
+    Source, SystemParam,
 };
 
 /// Mix link/unlink request *pulses*. The device toggles a routing cell with a
@@ -257,6 +257,23 @@ pub enum Command {
         param: PadParam,
         value: Value,
     },
+    /// Set a device-wide system parameter (identity, the firmware-update +
+    /// download command channel, date/time + personalization settings, the
+    /// global output disables, or USB / storage / sharing status) on the single
+    /// root `SYSTEM` node. Key-less: there is exactly one SYSTEM node.
+    ///
+    /// The encode-side mirror of [`crate::DeviceEvent::SystemParamChanged`]. Path
+    /// (the single `SYSTEM` node via [`Layout`]) and property name (via
+    /// [`SystemParam`]) are crate-owned; the `value` rides byte-faithfully on the
+    /// self-describing JUCE wire (per-parameter range/scale semantics are the
+    /// caller's responsibility, as with [`Command::SetChannelParam`]).
+    ///
+    /// Setting [`SystemParam::PowerOffRequest`] here addresses the *discovered*
+    /// `SYSTEM` node, unlike the dedicated [`Command::PowerOff`] frame which is
+    /// pinned to a fixed node index. On firmware 1.7.3 the discovered `SYSTEM`
+    /// node is that same index, so the two are equivalent there; prefer
+    /// [`Command::PowerOff`] for the plain "turn off" intent.
+    SetSystemParam { param: SystemParam, value: Value },
 }
 
 impl Command {
@@ -492,6 +509,16 @@ impl Command {
             }
             Command::SetPadParam { pad, param, value } => {
                 let path = pad_path(layout, *pad)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetSystemParam { param, value } => {
+                let path = layout
+                    .system_path()
+                    .ok_or(EncodeError::MissingNode { what: "SYSTEM" })?;
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
                     param.as_str(),

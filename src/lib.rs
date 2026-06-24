@@ -67,7 +67,7 @@ pub use layout::Layout;
 pub use names::{
     ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
     InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
-    Source,
+    Source, SystemParam,
 };
 pub use valuetree::{parse_valuetree, Node, Property};
 
@@ -100,4 +100,5 @@ const _: () = {
     assert_send_sync::<EffectsParam>();
     assert_send_sync::<GuiParam>();
     assert_send_sync::<PadParam>();
+    assert_send_sync::<SystemParam>();
 };

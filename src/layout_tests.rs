@@ -81,6 +81,7 @@ fn synthetic_tree() -> Node {
             node("PAD"),       // child 3
         ],
     ));
+    children.push(node("SYSTEM")); // 50: system singleton at the tail
     node_with_children("DEVICE", children)
 }
 
@@ -268,6 +269,17 @@ fn gui_path_uses_discovered_singleton() {
 }
 
 #[test]
+fn system_path_uses_discovered_singleton() {
+    let layout = Layout::from_full_sync(&synthetic_tree()).unwrap();
+    // SYSTEM at 50 in the synthetic tree (after the SOUNDPADS container at 49).
+    assert_eq!(layout.system(), Some(50));
+    assert_eq!(layout.system_path(), Some(vec![50]));
+    assert!(layout.is_system_path(&[50]));
+    assert!(!layout.is_system_path(&[49])); // that's SOUNDPADS
+    assert!(!layout.is_system_path(&[50, 0])); // wrong length
+}
+
+#[test]
 fn pad_path_is_two_level_through_soundpads() {
     let layout = Layout::from_full_sync(&synthetic_tree()).unwrap();
     // SOUNDPADS at 49, first_pad = 1 (PADHEADER at child 0), 3 pads.
@@ -320,6 +332,9 @@ fn ducker_recorder_player_headphone_absent_yield_none_not_panic() {
     assert_eq!(layout.pad_count(), 0);
     assert_eq!(layout.pad_path(0), None);
     assert_eq!(layout.pad_index_from_path(&[0, 0]), None);
+    assert_eq!(layout.system(), None);
+    assert_eq!(layout.system_path(), None);
+    assert!(!layout.is_system_path(&[0]));
 }
 
 #[test]
@@ -413,8 +428,16 @@ fn tree_with_system(props: Vec<Property>) -> Node {
 
 #[test]
 fn model_defaults_to_pro2_without_system_node() {
-    // The synthetic tree has no SYSTEM node.
-    let layout = Layout::from_full_sync(&synthetic_tree()).unwrap();
+    // A minimal tree with no SYSTEM node at all: model detection defaults to
+    // Pro II. (The main synthetic_tree carries an empty SYSTEM node for the
+    // singleton-addressing tests, so it can't prove the absent-node default.)
+    let phys = node_with_children("PHYSICALINTERFACE", vec![node("FADER")]);
+    let mut children = vec![phys, node("CHANNEL")];
+    for _ in 0..13 {
+        children.push(node("MIX"));
+    }
+    let layout = Layout::from_full_sync(&node_with_children("DEVICE", children)).unwrap();
+    assert_eq!(layout.system(), None);
     assert_eq!(layout.model(), DeviceModel::Pro2);
 }
 

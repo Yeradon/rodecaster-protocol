@@ -64,6 +64,8 @@ fn synthetic_root() -> Node {
         "SOUNDPADS",
         vec![n("PADHEADER"), n("PAD"), n("PAD"), n("PAD")],
     ));
+    // SYSTEM is the single device-wide state node (singleton) at the tail.
+    children.push(n("SYSTEM"));
     nc("DEVICE", children)
 }
 
@@ -489,6 +491,41 @@ fn decodes_unknown_gui_param_as_other() {
 }
 
 #[test]
+fn decodes_system_param() {
+    // A property on the SYSTEM path resolves to a key-less, typed SystemParam.
+    let l = layout();
+    let path = l.system_path().unwrap();
+    let payload = encode_property_changed(
+        &path,
+        "systemFirmwareVersion",
+        &Value::String("1.7.3".into()),
+    );
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::SystemParamChanged {
+            param: SystemParam::FirmwareVersion,
+            value: Value::String("1.7.3".into()),
+        }
+    );
+}
+
+#[test]
+fn decodes_unknown_system_param_as_other() {
+    let l = layout();
+    let path = l.system_path().unwrap();
+    let payload = encode_property_changed(&path, "mysterySystemFlag", &Value::Bool(true));
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::SystemParamChanged {
+            param: SystemParam::Other("mysterySystemFlag".to_string()),
+            value: Value::Bool(true),
+        }
+    );
+}
+
+#[test]
 fn decodes_pad_param_carries_index() {
     // A pad* property on a PAD path resolves to a typed PadParam carrying the
     // pad's ordinal index within the SOUNDPADS run.
@@ -796,6 +833,49 @@ fn extract_initial_state_includes_gui_params() {
     assert!(events.contains(&DeviceEvent::GuiParamChanged {
         param: GuiParam::EqParamModeLow,
         value: Value::Int(0),
+    }));
+}
+
+#[test]
+fn extract_initial_state_includes_system_params() {
+    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
+    let mut children = vec![phys, n("CHANNEL")];
+    for _ in 0..13 {
+        children.push(n("MIX"));
+    }
+    children.push(np(
+        "SYSTEM",
+        vec![
+            // boardType Int(0) keeps the detected model Pro II and surfaces as
+            // the typed BoardType variant.
+            prop("boardType", Value::Int(0)),
+            prop("systemFirmwareVersion", Value::String("1.7.3".into())),
+            // Quirky firmware casing must still type-resolve, not fall to Other.
+            prop("lastRecordingID", Value::Int(42)),
+            prop("powerOffRequest", Value::Bool(false)),
+        ],
+    ));
+    let root = nc("DEVICE", children);
+    let l = Layout::from_full_sync(&root).unwrap();
+    let events = extract_initial_state(&root, &l);
+
+    assert!(events.contains(&DeviceEvent::SystemParamChanged {
+        param: SystemParam::BoardType,
+        value: Value::Int(0),
+    }));
+    assert!(events.contains(&DeviceEvent::SystemParamChanged {
+        param: SystemParam::FirmwareVersion,
+        value: Value::String("1.7.3".into()),
+    }));
+    assert!(events.contains(&DeviceEvent::SystemParamChanged {
+        param: SystemParam::LastRecordingId,
+        value: Value::Int(42),
+    }));
+    // The powerOffRequest readback surfaces as a typed SystemParam, distinct
+    // from the dedicated Command::PowerOff write frame.
+    assert!(events.contains(&DeviceEvent::SystemParamChanged {
+        param: SystemParam::PowerOffRequest,
+        value: Value::Bool(false),
     }));
 }
 

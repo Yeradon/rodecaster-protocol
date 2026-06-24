@@ -26,7 +26,12 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        # Pinned, NOT `stable.latest`: `latest` re-resolves to the newest stable
+        # whenever rust-overlay updates, which silently shifts rustfmt/clippy
+        # rules and breaks `nix flake check` on unchanged code. Pin an explicit
+        # version so the toolchain is deterministic; bump it deliberately and
+        # re-run `nix flake check` to confirm fmt + clippy stay green.
+        rustToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
           extensions = [
             "rust-src"
             "rust-analyzer"

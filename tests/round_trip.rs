@@ -18,7 +18,7 @@ use rodecaster_protocol::{
     change_frame::{decode as decode_change_frame, encode_property_changed, ChangeFrame},
     decode_event, ChannelParam, Command, DeviceEvent, DuckerParam, EffectsParam, Fader, GuiParam,
     HeadphoneParam, InputSourceParam, Layout, MasterParam, MixOutput, Node, OutputParam, PadParam,
-    PlayerParam, Property, RecorderParam, Source, Value,
+    PlayerParam, Property, RecorderParam, Source, SystemParam, Value,
 };
 
 fn n(name: &str) -> Node {
@@ -121,6 +121,9 @@ fn synthetic_root() -> Node {
     // SOUNDPADS container with property-less PAD nodes, so the initial-state
     // event count assertions are unaffected (pads carry no props here).
     children.push(nc("SOUNDPADS", vec![n("PAD"), n("PAD")]));
+    // SYSTEM is the device-level singleton (identity, clock, update lifecycle),
+    // property-less here so the initial-state event count assertions are unaffected.
+    children.push(n("SYSTEM"));
     nc("DEVICE", children)
 }
 
@@ -593,6 +596,41 @@ fn round_trip_set_pad_param_preserves_index_and_value_shape() {
         assert_eq!(
             decode_event(&payloads[0], &l).unwrap(),
             DeviceEvent::PadParamChanged { pad, param, value }
+        );
+    }
+}
+
+#[test]
+fn round_trip_set_system_param_preserves_value_shape() {
+    let l = layout();
+    // SYSTEM is a key-less singleton: each value marker, including the Other path,
+    // must survive encode -> decode on the single SYSTEM node. Spot-checks the
+    // casing quirk wire names (updateViaUSB) alongside the typed variants.
+    let cases = [
+        (
+            SystemParam::FirmwareVersion,
+            Value::String("1.7.3".to_string()),
+        ),
+        (SystemParam::BoardType, Value::Int(0)),
+        (SystemParam::PowerOffRequest, Value::Bool(true)),
+        (SystemParam::UpdateDownloadProgress, Value::Double(0.5)),
+        (SystemParam::UpdateViaUsb, Value::Bool(true)),
+        (
+            SystemParam::Other("systemMysteryKnob".to_string()),
+            Value::Int(7),
+        ),
+    ];
+    for (param, value) in cases {
+        let payloads = Command::SetSystemParam {
+            param: param.clone(),
+            value: value.clone(),
+        }
+        .encode(&l)
+        .unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            decode_event(&payloads[0], &l).unwrap(),
+            DeviceEvent::SystemParamChanged { param, value }
         );
     }
 }

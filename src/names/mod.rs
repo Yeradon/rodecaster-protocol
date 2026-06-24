@@ -46,6 +46,7 @@ mod output;
 mod pad;
 mod player;
 mod recorder;
+mod system;
 
 pub use channel::ChannelParam;
 pub use core::{DeviceModel, Fader, MixOutput, Source};
@@ -59,3 +60,4 @@ pub use output::OutputParam;
 pub use pad::PadParam;
 pub use player::PlayerParam;
 pub use recorder::RecorderParam;
+pub use system::SystemParam;
