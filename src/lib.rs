@@ -9,7 +9,11 @@
 //!
 //! - [`juce_var`]: per-value `juce::var` codec ([`Value`], [`read_value`]).
 //! - [`valuetree`]: ValueTree tree decode ([`parse_valuetree`], [`Node`]).
-//! - [`frame`]: length-prefixed transport [`Packet`].
+//! - [`frame`]: bridge transport frame `[magic][len][body]` ([`Packet`]).
+//! - [`usb`]: USB HID transport frame `[len][body]` chunked into HID reports
+//!   ([`usb::Packet`]). Same binary-framing level as [`frame`]; the device
+//!   speaks the identical message body over both. Opening the socket / hidraw
+//!   and the read/write loop stay in the consumer, for both transports.
 //!
 //! ## Layer 2: JUCE `ValueTreeSynchroniser` change-frames
 //!
@@ -55,6 +59,7 @@ pub mod frame;
 pub mod juce_var;
 pub mod layout;
 pub mod names;
+pub mod usb;
 pub mod valuetree;
 
 pub use change_frame::ChangeFrame;
@@ -85,6 +90,7 @@ const _: () = {
     assert_send_sync::<Node>();
     assert_send_sync::<Property>();
     assert_send_sync::<Packet>();
+    assert_send_sync::<usb::Packet>();
     assert_send_sync::<DeviceModel>();
     assert_send_sync::<Source>();
     assert_send_sync::<MixOutput>();
