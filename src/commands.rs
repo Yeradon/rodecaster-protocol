@@ -19,16 +19,34 @@ use crate::names::{
     Source, SystemParam,
 };
 
-/// Mix link/unlink request *pulses*. The device toggles a routing cell with a
-/// two-frame pulse on `mixLinkRequest` / `mixUnlinkRequest`. Each 6-byte blob is
-/// two JUCE bools `[trigger, state]` (02 = true, 03 = false): the press carries
-/// `trigger=true` + the PRIOR link state, the release carries `trigger=false` +
-/// the NEW state. Captured from the device touchscreen and validated on hardware
-/// (probe-link8): replaying these links/unlinks a cell exactly like native.
-const MIX_LINK_PRESS: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x03]; // trigger=true, prior=unlinked
-const MIX_LINK_RELEASE: [u8; 6] = [0x01, 0x01, 0x03, 0x01, 0x01, 0x02]; // trigger=false, new=linked
-const MIX_UNLINK_PRESS: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02]; // trigger=true, prior=linked
-const MIX_UNLINK_RELEASE: [u8; 6] = [0x01, 0x01, 0x03, 0x01, 0x01, 0x03]; // trigger=false, new=unlinked
+/// The single 6-byte trigger payload the device requires on `mixLinkRequest`
+/// (to link) or `mixUnlinkRequest` (to unlink). Captured against a Duo on fw
+/// 1.7.3 over USB HID, 2026-06-30, by isolating each variable from the wider
+/// touchscreen behaviour.
+///
+/// **What the wire actually does:**
+///
+/// - `mixLinkRequest` and `mixUnlinkRequest` are properties whose natural
+///   at-rest type is `Bool(false)`. The device's request handler ignores
+///   `Bool` writes entirely and ignores `Binary` writes whose third byte is
+///   `0x03` (the JUCE `false` marker).
+/// - A `Binary` write whose third byte is `0x02` (the JUCE `true` marker)
+///   is treated as a request submission: the device runs the link state
+///   machine (flips `mixLink`, broadcasting `MixLinkChanged`) and then
+///   writes the property back to a `Binary` value with `byte[2] = 0x03`
+///   as a *device-side* acknowledgment.
+/// - The remaining bytes of the payload are arbitrary; only `byte[2]`
+///   gates the action. The touchscreen happens to fill the rest with
+///   another `01,01,02` triplet (matching this constant byte-for-byte).
+/// - Action direction is signalled entirely by the **property name**, not
+///   the payload bytes.
+///
+/// What looked like a touchscreen "press/release" two-frame pulse was
+/// actually one client-initiated trigger plus one device-initiated ack
+/// written back into the same property. See [`crate::DeviceEvent::MixLinkRequested`]
+/// for the inbound side ([`crate::MixLinkRequestOrigin::ClientTrigger`] vs
+/// [`crate::MixLinkRequestOrigin::DeviceAck`]).
+const MIX_LINK_TRIGGER: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02];
 
 /// CallMe return channels are toggled with a single legacy request blob (the
 /// `(trigger=true, state=true)` form). CallMe sits outside the mix matrix on a
@@ -111,14 +129,27 @@ pub enum Command {
         mix: MixOutput,
         mute: bool,
     },
-    /// Link a routing matrix cell, mirroring the device touchscreen exactly:
-    /// enable (`mixDisabled=false`), unmute (`mixMute=false`), then a two-frame
-    /// `mixLinkRequest` press/release pulse. `encode` returns all four frames in
-    /// order. The atomic halves are also callable on their own as
-    /// [`Command::SetMixDisabled`] and [`Command::SetMixMute`].
+    /// Write `mixLink` directly on a routing matrix cell, bypassing the
+    /// touchscreen press/release pulse on `mixLinkRequest` /
+    /// `mixUnlinkRequest`. Whether the device accepts this as an equivalent
+    /// state change (vs the pulse) is the open question this primitive exists
+    /// to answer — useful for capture-fidelity tooling and for collapsing
+    /// `LinkMix` from four frames to one if it works end-to-end.
+    SetMixLink {
+        source: Source,
+        mix: MixOutput,
+        linked: bool,
+    },
+    /// Link a routing matrix cell with the device-validated minimal sequence:
+    /// enable (`mixDisabled=false`), unmute (`mixMute=false`), then a single
+    /// `Binary` trigger write to `mixLinkRequest`. `encode` returns three
+    /// frames in order. The atomic halves are also callable on their own as
+    /// [`Command::SetMixDisabled`] and [`Command::SetMixMute`]; a press on
+    /// `mixLinkRequest` alone does NOT auto-clear `mixDisabled` or `mixMute`.
     LinkMix { source: Source, mix: MixOutput },
-    /// Unlink a routing matrix cell with the device's two-frame
-    /// `mixUnlinkRequest` press/release pulse.
+    /// Unlink a routing matrix cell with a single `Binary` trigger write to
+    /// `mixUnlinkRequest`. `mixDisabled` and `mixMute` retain their prior
+    /// values (the unlink does not re-disable or re-mute the cell).
     UnlinkMix { source: Source, mix: MixOutput },
     /// Wake the device display. A fixed, layout-independent message; see
     /// [`SCREEN_TOUCHED_FRAME`].
@@ -339,11 +370,24 @@ impl Command {
                     &Value::Bool(*mute),
                 )])
             }
+            Command::SetMixLink {
+                source,
+                mix,
+                linked,
+            } => {
+                let path = mix_path(layout, *source, *mix)?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    "mixLink",
+                    &Value::Bool(*linked),
+                )])
+            }
             Command::LinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
-                // Device-exact link (touchscreen-faithful): enable, then unmute,
-                // then a mixLinkRequest press/release pulse. The two state writes
-                // use the same wire form as SetMixDisabled / SetMixMute.
+                // Link sequence: enable (the press alone does NOT auto-clear
+                // mixDisabled), unmute (same for mixMute), then a single
+                // Binary trigger write to mixLinkRequest. Empirically validated
+                // on Duo fw 1.7.3 (2026-06-30) by isolating each variable.
                 Ok(vec![
                     change_frame::encode_property_changed(
                         &path,
@@ -354,30 +398,20 @@ impl Command {
                     change_frame::encode_property_changed(
                         &path,
                         "mixLinkRequest",
-                        &Value::Binary(MIX_LINK_PRESS.to_vec()),
-                    ),
-                    change_frame::encode_property_changed(
-                        &path,
-                        "mixLinkRequest",
-                        &Value::Binary(MIX_LINK_RELEASE.to_vec()),
+                        &Value::Binary(MIX_LINK_TRIGGER.to_vec()),
                     ),
                 ])
             }
             Command::UnlinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
-                // Device-exact unlink: mixUnlinkRequest press/release pulse.
-                Ok(vec![
-                    change_frame::encode_property_changed(
-                        &path,
-                        "mixUnlinkRequest",
-                        &Value::Binary(MIX_UNLINK_PRESS.to_vec()),
-                    ),
-                    change_frame::encode_property_changed(
-                        &path,
-                        "mixUnlinkRequest",
-                        &Value::Binary(MIX_UNLINK_RELEASE.to_vec()),
-                    ),
-                ])
+                // Single Binary trigger to mixUnlinkRequest is sufficient.
+                // No enable/unmute precondition; the cell's other gates retain
+                // whatever value they had.
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    "mixUnlinkRequest",
+                    &Value::Binary(MIX_LINK_TRIGGER.to_vec()),
+                )])
             }
             Command::ScreenTouched => Ok(vec![SCREEN_TOUCHED_FRAME.to_vec()]),
             Command::PowerOff => Ok(vec![change_frame::encode_property_changed(

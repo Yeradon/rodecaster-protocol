@@ -190,6 +190,100 @@ fn decodes_encoder_signal_as_fader_touch() {
 }
 
 #[test]
+fn decodes_encoder_colour_palette_index() {
+    // encoderColour shares encoderSignal's single-level addressing. >= 0 is
+    // the palette index.
+    let l = layout();
+    let payload = encode_property_changed(&[2u32], "encoderColour", &Value::Int(7));
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::FaderEncoderColourChanged {
+            fader: Fader::Physical3,
+            colour: Some(7),
+        }
+    );
+}
+
+#[test]
+fn decodes_encoder_colour_cleared() {
+    // The wire's -1 ("cleared") collapses to `colour: None`.
+    let l = layout();
+    let payload = encode_property_changed(&[0u32], "encoderColour", &Value::Int(-1));
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::FaderEncoderColourChanged {
+            fader: Fader::Physical1,
+            colour: None,
+        }
+    );
+}
+
+#[test]
+fn decodes_mix_link_request_client_trigger_and_device_ack() {
+    // mixLinkRequest at a cell's single-level path; direction = property
+    // name, origin = byte[2] (02 = client trigger, 03 = device ack).
+    let l = layout();
+    let path = l.mix_cell_path(0, 0).unwrap();
+    let trigger = encode_property_changed(
+        &path,
+        "mixLinkRequest",
+        &Value::Binary(vec![0x01, 0x01, 0x02, 0x01, 0x01, 0x02]),
+    );
+    let ack = encode_property_changed(
+        &path,
+        "mixLinkRequest",
+        &Value::Binary(vec![0x01, 0x01, 0x03, 0x01, 0x01, 0x03]),
+    );
+    let trigger_evt = decode_event(&trigger, &l).unwrap();
+    let ack_evt = decode_event(&ack, &l).unwrap();
+    let source = Source::from_protocol(0).unwrap();
+    let mix = MixOutput::from_protocol(0).unwrap();
+    assert_eq!(
+        trigger_evt,
+        DeviceEvent::MixLinkRequested {
+            source,
+            mix,
+            direction: MixLinkDirection::Link,
+            origin: MixLinkRequestOrigin::ClientTrigger,
+        }
+    );
+    assert_eq!(
+        ack_evt,
+        DeviceEvent::MixLinkRequested {
+            source,
+            mix,
+            direction: MixLinkDirection::Link,
+            origin: MixLinkRequestOrigin::DeviceAck,
+        }
+    );
+}
+
+#[test]
+fn decodes_mix_unlink_request_direction_from_property_name() {
+    // mixUnlinkRequest carries the same payload semantics; direction is
+    // entirely encoded in the property name.
+    let l = layout();
+    let path = l.mix_cell_path(0, 0).unwrap();
+    let payload = encode_property_changed(
+        &path,
+        "mixUnlinkRequest",
+        &Value::Binary(vec![0x01, 0x01, 0x03, 0x01, 0x01, 0x02]),
+    );
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::MixLinkRequested {
+            source: Source::from_protocol(0).unwrap(),
+            mix: MixOutput::from_protocol(0).unwrap(),
+            direction: MixLinkDirection::Unlink,
+            origin: MixLinkRequestOrigin::DeviceAck,
+        }
+    );
+}
+
+#[test]
 fn decodes_channel_input_source_echo_at_stride_6() {
     // The echo for fader N sits at first_channel + 6*N, not the stride-1
     // write path.

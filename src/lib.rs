@@ -65,7 +65,7 @@ pub mod valuetree;
 pub use change_frame::ChangeFrame;
 pub use command::RodeCommand;
 pub use commands::Command;
-pub use events::{decode_event, DeviceEvent};
+pub use events::{decode_event, DeviceEvent, MixLinkDirection, MixLinkRequestOrigin};
 pub use frame::{frame_payload, scan_frame, FrameScan, Packet, MAGIC_HEADER};
 pub use juce_var::{read_value, Reader, Value};
 pub use layout::Layout;
@@ -85,6 +85,8 @@ const _: () = {
     assert_send_sync::<Layout>();
     assert_send_sync::<Command>();
     assert_send_sync::<DeviceEvent>();
+    assert_send_sync::<MixLinkDirection>();
+    assert_send_sync::<MixLinkRequestOrigin>();
     assert_send_sync::<ChangeFrame>();
     assert_send_sync::<Value>();
     assert_send_sync::<Node>();

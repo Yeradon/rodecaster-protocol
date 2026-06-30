@@ -171,7 +171,7 @@ fn set_mix_disabled_addresses_source_major_cell() {
 }
 
 #[test]
-fn link_mix_emits_device_exact_sequence() {
+fn link_mix_emits_enable_unmute_trigger() {
     let l = layout();
     let bytes = Command::LinkMix {
         source: Source::Combo1,
@@ -181,15 +181,14 @@ fn link_mix_emits_device_exact_sequence() {
     .unwrap();
     assert_eq!(
         bytes.len(),
-        4,
-        "link emits enable + unmute + press + release"
+        3,
+        "link emits enable + unmute + mixLinkRequest trigger"
     );
 
     let expect = [
         ("mixDisabled", Value::Bool(false)),
         ("mixMute", Value::Bool(false)),
-        ("mixLinkRequest", Value::Binary(MIX_LINK_PRESS.to_vec())),
-        ("mixLinkRequest", Value::Binary(MIX_LINK_RELEASE.to_vec())),
+        ("mixLinkRequest", Value::Binary(MIX_LINK_TRIGGER.to_vec())),
     ];
     for (raw, (exp_name, exp_val)) in bytes.iter().zip(expect.iter()) {
         match decode(raw).unwrap() {
@@ -203,7 +202,7 @@ fn link_mix_emits_device_exact_sequence() {
 }
 
 #[test]
-fn unlink_mix_emits_press_release_pulse() {
+fn unlink_mix_emits_single_trigger() {
     let l = layout();
     let bytes = Command::UnlinkMix {
         source: Source::Combo1,
@@ -211,20 +210,14 @@ fn unlink_mix_emits_press_release_pulse() {
     }
     .encode(&l)
     .unwrap();
-    assert_eq!(bytes.len(), 2, "unlink emits press + release");
+    assert_eq!(bytes.len(), 1, "unlink emits mixUnlinkRequest trigger only");
 
-    let expect = [
-        Value::Binary(MIX_UNLINK_PRESS.to_vec()),
-        Value::Binary(MIX_UNLINK_RELEASE.to_vec()),
-    ];
-    for (raw, exp_val) in bytes.iter().zip(expect.iter()) {
-        match decode(raw).unwrap() {
-            ChangeFrame::PropertyChanged { name, value, .. } => {
-                assert_eq!(name, "mixUnlinkRequest");
-                assert_eq!(&value, exp_val);
-            }
-            _ => panic!("wrong variant"),
+    match decode(&bytes[0]).unwrap() {
+        ChangeFrame::PropertyChanged { name, value, .. } => {
+            assert_eq!(name, "mixUnlinkRequest");
+            assert_eq!(value, Value::Binary(MIX_LINK_TRIGGER.to_vec()));
         }
+        _ => panic!("wrong variant"),
     }
 }
 

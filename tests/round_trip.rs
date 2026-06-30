@@ -17,8 +17,9 @@
 use rodecaster_protocol::{
     change_frame::{decode as decode_change_frame, encode_property_changed, ChangeFrame},
     decode_event, ChannelParam, Command, DeviceEvent, DuckerParam, EffectsParam, Fader, GuiParam,
-    HeadphoneParam, InputSourceParam, Layout, MasterParam, MixOutput, Node, OutputParam, PadParam,
-    PlayerParam, Property, RecorderParam, Source, SystemParam, Value,
+    HeadphoneParam, InputSourceParam, Layout, MasterParam, MixLinkDirection, MixLinkRequestOrigin,
+    MixOutput, Node, OutputParam, PadParam, PlayerParam, Property, RecorderParam, Source,
+    SystemParam, Value,
 };
 
 fn n(name: &str) -> Node {
@@ -643,7 +644,12 @@ fn round_trip_link_mix_emits_device_exact_sequence() {
         mix: MixOutput::Speaker,
     };
     let payloads = cmd.encode(&l).unwrap();
-    assert_eq!(payloads.len(), 4, "enable + unmute + link press + release");
+    assert_eq!(
+        payloads.len(),
+        3,
+        "enable + unmute + mixLinkRequest trigger (the device's ack is its own write, \
+         not something the client emits)"
+    );
 
     // [0] enable (mixDisabled = false) -> MixDisabledChanged.
     assert_eq!(
@@ -665,14 +671,41 @@ fn round_trip_link_mix_emits_device_exact_sequence() {
         }
     );
 
-    // [2],[3] mixLinkRequest press/release: a Binary request, not a typed state
-    // event, so each surfaces as Unknown.
-    for p in &payloads[2..] {
-        match decode_event(p, &l).unwrap() {
-            DeviceEvent::Unknown { prop_name, .. } => assert_eq!(prop_name, "mixLinkRequest"),
-            other => panic!("expected Unknown for mixLinkRequest, got {other:?}"),
+    // [2] mixLinkRequest = Binary trigger -> MixLinkRequested with origin =
+    // ClientTrigger (byte[2] = 0x02).
+    assert_eq!(
+        decode_event(&payloads[2], &l).unwrap(),
+        DeviceEvent::MixLinkRequested {
+            source: Source::Combo1,
+            mix: MixOutput::Speaker,
+            direction: MixLinkDirection::Link,
+            origin: MixLinkRequestOrigin::ClientTrigger,
         }
-    }
+    );
+}
+
+#[test]
+fn round_trip_unlink_mix_is_single_trigger_frame() {
+    let l = layout();
+    let cmd = Command::UnlinkMix {
+        source: Source::Combo1,
+        mix: MixOutput::Speaker,
+    };
+    let payloads = cmd.encode(&l).unwrap();
+    assert_eq!(
+        payloads.len(),
+        1,
+        "mixUnlinkRequest trigger; the cell's prior mixDisabled / mixMute are retained"
+    );
+    assert_eq!(
+        decode_event(&payloads[0], &l).unwrap(),
+        DeviceEvent::MixLinkRequested {
+            source: Source::Combo1,
+            mix: MixOutput::Speaker,
+            direction: MixLinkDirection::Unlink,
+            origin: MixLinkRequestOrigin::ClientTrigger,
+        }
+    );
 }
 
 #[test]

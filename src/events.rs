@@ -14,7 +14,8 @@
 //!   stride 1 from `first_channel`, but echoed back at **stride 6**
 //!   (`0x1C`=fader0, `0x22`=fader1, ...). [`decode_property`] resolves the echo
 //!   with that stride.
-//! - `encoderSignal` ([`DeviceEvent::FaderTouched`]): a single-level path whose
+//! - `encoderSignal` ([`DeviceEvent::FaderTouched`]) and `encoderColour`
+//!   ([`DeviceEvent::FaderEncoderColourChanged`]): single-level paths whose
 //!   value is the raw fader index (no base offset).
 //!
 //! Both formulas reproduce the behaviour the reference server ran in
@@ -47,15 +48,69 @@ pub enum DeviceEvent {
         fader: Fader,
         enabled: bool,
     },
-    /// Virtual fader level (0..127 MIDI scale).
+    /// Fader level (0..127 MIDI scale).
+    ///
+    /// **fw 1.7.3 reachability (Duo, 2026-06-30):** at runtime this event only
+    /// fires for `Fader::Virtual*` strips. Pushing a `Fader::Physical*` strip
+    /// emits no `faderLevel` property change on the JUCE wire; the hardware
+    /// fader's live position only flows over MIDI CC#15 on UART3 to
+    /// `rc_audio_mixer`, which echoes its effect downstream as a
+    /// `mixLevelWithAnchor` sweep across the source's matrix column (each
+    /// cell's `value` field carries the live fader position). Physical fader
+    /// positions DO surface here once at initial state via
+    /// [`extract_initial_state`] (the fullSync seeds them from
+    /// `PHYSICALINTERFACE > FADER.faderLevel`), but the runtime change path is
+    /// unreachable for physical strips on this firmware.
     FaderLevelChanged {
         fader: Fader,
         level: u8,
     },
     /// A fader strip was touched (the device's `encoderSignal`). The wire
     /// addresses it by raw fader index (single-level path, no base offset).
+    ///
+    /// **fw 1.7.3 reachability (Duo, 2026-06-30):** observed for `Virtual*`
+    /// strips driven from the touchscreen. Pushing a `Physical*` strip emits
+    /// only a `mixLevelWithAnchor` sweep on its source's matrix column and no
+    /// `encoderSignal`; the hardware touch sensor's events appear to stay on
+    /// UART3 to `rc_audio_mixer` rather than crossing the JUCE wire.
     FaderTouched {
         fader: Fader,
+    },
+    /// The LED-ring colour index of a fader strip's rotary encoder changed
+    /// (the device's `encoderColour`). Same single-level addressing as
+    /// `encoderSignal`: the path is the raw fader index. `colour` is `None`
+    /// when the wire value is `-1` (cleared), otherwise the palette index the
+    /// device emitted.
+    ///
+    /// Captured 2026-06-30 from a real Duo capture; palette index semantics
+    /// (what each value paints) are not modeled here, only round-tripped.
+    FaderEncoderColourChanged {
+        fader: Fader,
+        colour: Option<i32>,
+    },
+    /// A `mixLinkRequest` or `mixUnlinkRequest` property carrying a `Binary`
+    /// payload was observed at a mix cell's single-level path. Captured
+    /// 2026-06-30 against a Duo on fw 1.7.3.
+    ///
+    /// `direction` (Link vs Unlink) comes from the property name. `origin`
+    /// (ClientTrigger vs DeviceAck) comes from the third byte of the payload
+    /// (`0x02` = client-initiated trigger, `0x03` = device-emitted
+    /// acknowledgment). The earlier "press / release" interpretation was
+    /// modeling them as symmetric phases of a single gesture, but probes
+    /// showed the two have asymmetric origins: only client triggers cause
+    /// state changes; the ack is the device writing the property back into
+    /// the same Binary slot after running the link state machine.
+    ///
+    /// State change confirmation comes via [`DeviceEvent::MixLinkChanged`];
+    /// this event is the protocol-level trace of the request submission and
+    /// acknowledgment, useful for replay-fidelity tooling and capture
+    /// diffing. The remaining payload bytes are arbitrary — only the third
+    /// byte gates the device's behaviour.
+    MixLinkRequested {
+        source: Source,
+        mix: MixOutput,
+        direction: MixLinkDirection,
+        origin: MixLinkRequestOrigin,
     },
     /// A fader's input-source assignment changed (`channelInputSource` echo,
     /// resolved at the stride-6 echo addressing — see module docs). `source`
@@ -250,6 +305,33 @@ pub enum DeviceEvent {
     },
 }
 
+/// Direction of a mix-cell link request echo (see
+/// [`DeviceEvent::MixLinkRequested`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixLinkDirection {
+    /// The device echoed a `mixLinkRequest` property (link action).
+    Link,
+    /// The device echoed a `mixUnlinkRequest` property (unlink action).
+    Unlink,
+}
+
+/// Origin of a mix-cell link request observation (see
+/// [`DeviceEvent::MixLinkRequested`]). Distinguishes the client-initiated
+/// trigger from the device's own acknowledgment write, identified by the
+/// third byte of the `Binary` payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixLinkRequestOrigin {
+    /// `byte[2] = 0x02`. A client wrote the trigger; the device runs the
+    /// link state machine in response. This is what [`crate::Command::LinkMix`]
+    /// and [`crate::Command::UnlinkMix`] emit.
+    ClientTrigger,
+    /// `byte[2] = 0x03`. The device wrote the property back to itself as an
+    /// acknowledgment after running the link state machine. Not a frame any
+    /// client should emit; the device ignores `Binary` writes with this
+    /// pattern.
+    DeviceAck,
+}
+
 /// Decode one wire payload (the change-frame, not including transport frame)
 /// into a typed event. Returns `None` if the payload isn't a recognized JUCE
 /// change-frame at all.
@@ -357,6 +439,25 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
                     }
                 }
             }
+            // mixLinkRequest / mixUnlinkRequest at a cell's single-level path.
+            // Direction = property name; origin = byte[2] of the 6-byte Binary
+            // payload (0x02 = client trigger, 0x03 = device ack). See
+            // `DeviceEvent::MixLinkRequested` and the doc on `Command::LinkMix`.
+            "mixLinkRequest" | "mixUnlinkRequest" => {
+                if let Some(origin) = value.as_ref().and_then(mix_link_request_origin) {
+                    let direction = if name == "mixLinkRequest" {
+                        MixLinkDirection::Link
+                    } else {
+                        MixLinkDirection::Unlink
+                    };
+                    return DeviceEvent::MixLinkRequested {
+                        source,
+                        mix,
+                        direction,
+                        origin,
+                    };
+                }
+            }
             _ => {}
         }
     }
@@ -368,6 +469,23 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
             if raw < layout.fader_count() as u32 {
                 if let Some(fader) = Fader::from_index(model, raw as u8) {
                     return DeviceEvent::FaderTouched { fader };
+                }
+            }
+        }
+    }
+
+    // encoderColour: LED-ring colour of a fader strip's rotary encoder. Same
+    // single-level addressing as encoderSignal; the value is an Int where -1
+    // means "cleared / no colour" and >= 0 is the palette index. A missing
+    // or non-Int value falls through to Unknown so we don't conflate the two.
+    if name == "encoderColour" {
+        if let Some(&raw) = path.first() {
+            if raw < layout.fader_count() as u32 {
+                if let Some(fader) = Fader::from_index(model, raw as u8) {
+                    if let Some(i) = value.as_ref().and_then(Value::as_int) {
+                        let colour = if i < 0 { None } else { Some(i as i32) };
+                        return DeviceEvent::FaderEncoderColourChanged { fader, colour };
+                    }
                 }
             }
         }
@@ -566,6 +684,23 @@ fn parse_mix_level(s: &str) -> Option<(f32, f32)> {
     let anchor = s.split('|').next()?.parse().ok()?;
     let value = s.split('|').next_back()?.parse().ok()?;
     Some((anchor, value))
+}
+
+/// Read the origin out of a `mixLinkRequest` / `mixUnlinkRequest` payload.
+/// The 6-byte blob's third byte is a JUCE bool marker — `0x02` (true) means
+/// a client wrote the trigger, `0x03` (false) means the device wrote back
+/// its acknowledgment. Anything else (or non-Binary) returns `None` and the
+/// event falls through to [`DeviceEvent::Unknown`].
+fn mix_link_request_origin(value: &Value) -> Option<MixLinkRequestOrigin> {
+    let bytes = match value {
+        Value::Binary(b) => b,
+        _ => return None,
+    };
+    match bytes.get(2)? {
+        0x02 => Some(MixLinkRequestOrigin::ClientTrigger),
+        0x03 => Some(MixLinkRequestOrigin::DeviceAck),
+        _ => None,
+    }
 }
 
 /// Walk a parsed fullSync and produce the initial DeviceEvent list. Mirrors
