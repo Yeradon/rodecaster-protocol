@@ -9,8 +9,10 @@ use std::fmt;
 wire_param_enum! {
     /// A device-diagnostic parameter: the two flat properties on the
     /// singleton `TEST` node. `AllLedsWhite` is a factory-test command
-    /// (writing `Bool(true)` lights every LED); `ToneGeneration` selects
-    /// an internal test-tone source for audio-path verification.
+    /// (writing `Int(1)` engages the all-LEDs-white mode; verified on Duo
+    /// fw 1.7.3, write persists across refresh); `ToneGeneration` selects
+    /// an internal test-tone source for audio-path verification. Both wire
+    /// types are `Int`; the crate types the property name only.
     ///
     /// Firmware wire name preserves the capitalized "LEDS" (`allLEDSWhite`).
     TestParam {

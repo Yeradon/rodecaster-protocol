@@ -187,6 +187,12 @@ pub struct Layout {
     sip_advanced: Singleton,
     sip_call_slots: Indexed,
     sip_registration: TwoLevel,
+    // TEST: factory-diagnostic singleton at root.
+    test: Singleton,
+    // PADRECORDER: a run at root (one node per pad recorder instance).
+    pad_recorder: Indexed,
+    // FXPRESET: two-level under the FXPRESETS container at root.
+    fx_preset: TwoLevel,
 }
 
 impl Layout {
@@ -287,6 +293,38 @@ impl Layout {
             idx: position_of_named_child(root, "SYSTEM"),
         };
 
+        // TEST diagnostic singleton at root.
+        let test = Singleton {
+            idx: position_of_named_child(root, "TEST"),
+        };
+
+        // PADRECORDER: a run at root (one per pad recorder instance).
+        let pad_recorder = discover_run(root, "PADRECORDER");
+
+        // FXPRESET: two-level under the FXPRESETS container at root.
+        let fx_preset = match position_of_named_child(root, "FXPRESETS") {
+            Some(fp_idx) => {
+                let fp = &root.children[fp_idx as usize];
+                match position_of_named_child(fp, "FXPRESET") {
+                    Some(first) => TwoLevel {
+                        parent: Some(fp_idx),
+                        first,
+                        count: count_consecutive_named(fp, first, "FXPRESET"),
+                    },
+                    None => TwoLevel {
+                        parent: Some(fp_idx),
+                        first: 0,
+                        count: 0,
+                    },
+                }
+            }
+            None => TwoLevel {
+                parent: None,
+                first: 0,
+                count: 0,
+            },
+        };
+
         // SIP subsystem discovery. SIPCALLING and SIPADVANCED are root
         // singletons; SIPCALLSLOTS is a contiguous run at root (the Duo
         // captures 3 consecutive slots); SIPREGISTRATION is a run of
@@ -369,6 +407,9 @@ impl Layout {
             sip_advanced,
             sip_call_slots,
             sip_registration,
+            test,
+            pad_recorder,
+            fx_preset,
         })
     }
 
@@ -657,6 +698,51 @@ impl Layout {
     /// Number of discovered `SIPREGISTRATION` child nodes under SIPCALLING.
     pub fn sip_registration_count(&self) -> u8 {
         self.sip_registration.count
+    }
+
+    /// Root-down path to the singleton `TEST` diagnostic node, if present.
+    pub fn test_path(&self) -> Option<Vec<u32>> {
+        self.test.path()
+    }
+
+    /// True if this single-level path points at the `TEST` node.
+    pub fn is_test_path(&self, path: &[u32]) -> bool {
+        self.test.is_path(path)
+    }
+
+    /// Root-down path to the `n`th `PADRECORDER` node in the discovered run.
+    /// `None` if `n` is past the run or no PADRECORDER nodes were present.
+    pub fn pad_recorder_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.pad_recorder.path(n)
+    }
+
+    /// Inverse of [`Self::pad_recorder_path`]: the recorder ordinal, if this
+    /// single-level path falls inside the discovered run.
+    pub fn pad_recorder_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.pad_recorder.index_from_path(path)
+    }
+
+    /// Number of discovered `PADRECORDER` nodes.
+    pub fn pad_recorder_count(&self) -> u8 {
+        self.pad_recorder.count
+    }
+
+    /// Root-down two-level path to the `n`th `FXPRESET` child under
+    /// `FXPRESETS`. `None` if `n` is past the discovered run or FXPRESETS
+    /// is absent.
+    pub fn fx_preset_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.fx_preset.path(n)
+    }
+
+    /// Inverse of [`Self::fx_preset_path`]: the preset ordinal, if this
+    /// two-level path identifies an FXPRESET under FXPRESETS.
+    pub fn fx_preset_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.fx_preset.index_from_path(path)
+    }
+
+    /// Number of discovered `FXPRESET` child nodes under FXPRESETS.
+    pub fn fx_preset_count(&self) -> u8 {
+        self.fx_preset.count
     }
 
     /// Root-down path to the `n`th `HEADPHONE` node (single-level). `n` is the

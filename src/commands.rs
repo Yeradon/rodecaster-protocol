@@ -14,10 +14,10 @@ use crate::change_frame;
 use crate::juce_var::Value;
 use crate::layout::Layout;
 use crate::names::{
-    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
-    InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
-    SipAdvancedParam, SipCallSlotsParam, SipCallingParam, SipRegistrationParam, Source,
-    SystemParam,
+    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, FxPresetParam, GuiParam,
+    HeadphoneParam, InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam,
+    PadRecorderParam, PlayerParam, RecorderParam, SipAdvancedParam, SipCallSlotsParam,
+    SipCallingParam, SipRegistrationParam, Source, SystemParam, TestParam,
 };
 
 /// The single 6-byte trigger payload the device requires on `mixLinkRequest`
@@ -129,17 +129,6 @@ pub enum Command {
         source: Source,
         mix: MixOutput,
         mute: bool,
-    },
-    /// Write `mixLink` directly on a routing matrix cell, bypassing the
-    /// touchscreen press/release pulse on `mixLinkRequest` /
-    /// `mixUnlinkRequest`. Whether the device accepts this as an equivalent
-    /// state change (vs the pulse) is the open question this primitive exists
-    /// to answer — useful for capture-fidelity tooling and for collapsing
-    /// `LinkMix` from four frames to one if it works end-to-end.
-    SetMixLink {
-        source: Source,
-        mix: MixOutput,
-        linked: bool,
     },
     /// Link a routing matrix cell with the device-validated minimal sequence:
     /// enable (`mixDisabled=false`), unmute (`mixMute=false`), then a single
@@ -339,6 +328,30 @@ pub enum Command {
         param: SipAdvancedParam,
         value: Value,
     },
+    /// Set a diagnostic parameter on the singleton `TEST` node. Writing
+    /// `TestParam::AllLedsWhite = Bool(true)` lights every front-panel LED
+    /// (factory-test hook); `ToneGeneration = Int(N)` selects an internal
+    /// test-tone source for audio-path verification.
+    SetTestParam { param: TestParam, value: Value },
+    /// Set a per-pad-recorder parameter on one of the `PADRECORDER` nodes.
+    /// `pad_recorder` is the discovered ordinal (see
+    /// [`Layout::pad_recorder_count`]). `StateRequest` is the write-side
+    /// command channel to start / stop recording; `Clear` erases the pad's
+    /// current recording.
+    SetPadRecorderParam {
+        pad_recorder: u8,
+        param: PadRecorderParam,
+        value: Value,
+    },
+    /// Set a per-preset effects parameter on one of the `FXPRESET` child
+    /// nodes under `FXPRESETS`. `preset` is the discovered ordinal
+    /// (see [`Layout::fx_preset_count`]). `Contents` is a serialized preset
+    /// blob; `Idx` addresses the preset slot the contents apply to.
+    SetFxPresetParam {
+        preset: u8,
+        param: FxPresetParam,
+        value: Value,
+    },
 }
 
 impl Command {
@@ -402,18 +415,6 @@ impl Command {
                     &path,
                     "mixMute",
                     &Value::Bool(*mute),
-                )])
-            }
-            Command::SetMixLink {
-                source,
-                mix,
-                linked,
-            } => {
-                let path = mix_path(layout, *source, *mix)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    "mixLink",
-                    &Value::Bool(*linked),
                 )])
             }
             Command::LinkMix { source, mix } => {
@@ -635,6 +636,47 @@ impl Command {
                     .ok_or(EncodeError::MissingNode {
                         what: "SIPCALLSLOTS",
                     })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetTestParam { param, value } => {
+                let path = layout
+                    .test_path()
+                    .ok_or(EncodeError::MissingNode { what: "TEST" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetPadRecorderParam {
+                pad_recorder,
+                param,
+                value,
+            } => {
+                let path =
+                    layout
+                        .pad_recorder_path(*pad_recorder)
+                        .ok_or(EncodeError::MissingNode {
+                            what: "PADRECORDER",
+                        })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetFxPresetParam {
+                preset,
+                param,
+                value,
+            } => {
+                let path = layout
+                    .fx_preset_path(*preset)
+                    .ok_or(EncodeError::MissingNode { what: "FXPRESET" })?;
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
                     param.as_str(),
