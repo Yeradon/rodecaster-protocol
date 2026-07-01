@@ -70,9 +70,14 @@ pub use frame::{frame_payload, scan_frame, FrameScan, Packet, MAGIC_HEADER};
 pub use juce_var::{read_value, Reader, Value};
 pub use layout::Layout;
 pub use names::{
-    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
-    InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
-    Source, SystemParam,
+    AppParam, AudioParam, BuildParam, ChannelParam, CurrentShowParam, DeviceModel, DuckerParam,
+    EffectsParam, Fader, FxPresetParam, GuiParam, HeadphoneParam, InputSourceParam, MasterParam,
+    MeterParam, MixMinusesParam, MixOutput, NetworkParam, OutputParam, PadParam, PadRecorderParam,
+    PlayerParam, RadioParam, RadioRxParam, RadioTxParam, RcSyncMixParam, RecorderParam,
+    RecordingParam, RecordingsParam, ShowControlParam, ShowParam, SipAdvancedParam,
+    SipCallSlotsParam, SipCallingParam, SipRegistrationParam, Source, StorageVolumeParam,
+    StreamerXMixPresetParam, StreamerXStreamMixParam, SystemParam, TestParam, ThemeParam,
+    WifiScanResultParam,
 };
 pub use valuetree::{parse_valuetree, Node, Property};
 
@@ -109,4 +114,31 @@ const _: () = {
     assert_send_sync::<GuiParam>();
     assert_send_sync::<PadParam>();
     assert_send_sync::<SystemParam>();
+    assert_send_sync::<NetworkParam>();
+    assert_send_sync::<StorageVolumeParam>();
+    assert_send_sync::<RecordingsParam>();
+    assert_send_sync::<RecordingParam>();
+    assert_send_sync::<AudioParam>();
+    assert_send_sync::<BuildParam>();
+    assert_send_sync::<AppParam>();
+    assert_send_sync::<ThemeParam>();
+    assert_send_sync::<CurrentShowParam>();
+    assert_send_sync::<ShowParam>();
+    assert_send_sync::<ShowControlParam>();
+    assert_send_sync::<MeterParam>();
+    assert_send_sync::<SipCallingParam>();
+    assert_send_sync::<SipRegistrationParam>();
+    assert_send_sync::<SipCallSlotsParam>();
+    assert_send_sync::<SipAdvancedParam>();
+    assert_send_sync::<StreamerXMixPresetParam>();
+    assert_send_sync::<StreamerXStreamMixParam>();
+    assert_send_sync::<FxPresetParam>();
+    assert_send_sync::<PadRecorderParam>();
+    assert_send_sync::<TestParam>();
+    assert_send_sync::<WifiScanResultParam>();
+    assert_send_sync::<RadioParam>();
+    assert_send_sync::<RadioTxParam>();
+    assert_send_sync::<RadioRxParam>();
+    assert_send_sync::<MixMinusesParam>();
+    assert_send_sync::<RcSyncMixParam>();
 };

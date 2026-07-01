@@ -16,7 +16,8 @@ use crate::layout::Layout;
 use crate::names::{
     ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, GuiParam, HeadphoneParam,
     InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam, PlayerParam, RecorderParam,
-    Source, SystemParam,
+    SipAdvancedParam, SipCallSlotsParam, SipCallingParam, SipRegistrationParam, Source,
+    SystemParam,
 };
 
 /// The single 6-byte trigger payload the device requires on `mixLinkRequest`
@@ -305,6 +306,39 @@ pub enum Command {
     /// node is that same index, so the two are equivalent there; prefer
     /// [`Command::PowerOff`] for the plain "turn off" intent.
     SetSystemParam { param: SystemParam, value: Value },
+    /// Set a SIP calling-level parameter on the singleton `SIPCALLING` node.
+    /// Empirically verified writable on Duo fw 1.7.3 (2026-07-01): toggling
+    /// `SipCallingParam::HostingEnabled` rotates `sipRodeCode` and re-registers.
+    SetSipCallingParam {
+        param: SipCallingParam,
+        value: Value,
+    },
+    /// Set a per-registration SIP parameter on one of the SIPREGISTRATION
+    /// child nodes under SIPCALLING. `registration` selects the slot
+    /// (0..sip_registration_count).
+    SetSipRegistrationParam {
+        registration: u8,
+        param: SipRegistrationParam,
+        value: Value,
+    },
+    /// Set a per-call-slot SIP parameter on one of the SIPCALLSLOTS nodes.
+    /// `slot` selects the slot (0..sip_call_slots_count). Statistics fields
+    /// are device-managed and writes may be ignored; the crate accepts the
+    /// write regardless.
+    SetSipCallSlotsParam {
+        slot: u8,
+        param: SipCallSlotsParam,
+        value: Value,
+    },
+    /// Set a SIP advanced-settings parameter on the singleton `SIPADVANCED`
+    /// node. Empirically verified: all 25 typed properties in this family
+    /// are writable + persistent on Duo fw 1.7.3. Writes to
+    /// registration-relevant fields (account credentials, NAT, domain)
+    /// trigger a device-side registration re-check echo.
+    SetSipAdvancedParam {
+        param: SipAdvancedParam,
+        value: Value,
+    },
 }
 
 impl Command {
@@ -553,6 +587,54 @@ impl Command {
                 let path = layout
                     .system_path()
                     .ok_or(EncodeError::MissingNode { what: "SYSTEM" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetSipCallingParam { param, value } => {
+                let path = layout
+                    .sip_calling_path()
+                    .ok_or(EncodeError::MissingNode { what: "SIPCALLING" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetSipAdvancedParam { param, value } => {
+                let path = layout.sip_advanced_path().ok_or(EncodeError::MissingNode {
+                    what: "SIPADVANCED",
+                })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetSipRegistrationParam {
+                registration,
+                param,
+                value,
+            } => {
+                let path = layout.sip_registration_path(*registration).ok_or(
+                    EncodeError::MissingNode {
+                        what: "SIPREGISTRATION",
+                    },
+                )?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetSipCallSlotsParam { slot, param, value } => {
+                let path = layout
+                    .sip_call_slots_path(*slot)
+                    .ok_or(EncodeError::MissingNode {
+                        what: "SIPCALLSLOTS",
+                    })?;
                 Ok(vec![change_frame::encode_property_changed(
                     &path,
                     param.as_str(),

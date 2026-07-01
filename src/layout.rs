@@ -180,6 +180,13 @@ pub struct Layout {
     // container can exist with zero pads, so its presence is tracked separately
     // from the run length.
     pad: TwoLevel,
+    // SIP subsystem. SIPCALLING and SIPADVANCED are singletons at root; the
+    // SIPCALLSLOTS run holds one node per configured call slot (three on the
+    // Duo); SIPREGISTRATION nodes are children of SIPCALLING (two on the Duo).
+    sip_calling: Singleton,
+    sip_advanced: Singleton,
+    sip_call_slots: Indexed,
+    sip_registration: TwoLevel,
 }
 
 impl Layout {
@@ -280,6 +287,40 @@ impl Layout {
             idx: position_of_named_child(root, "SYSTEM"),
         };
 
+        // SIP subsystem discovery. SIPCALLING and SIPADVANCED are root
+        // singletons; SIPCALLSLOTS is a contiguous run at root (the Duo
+        // captures 3 consecutive slots); SIPREGISTRATION is a run of
+        // children under SIPCALLING (the Duo captures 2 registration slots).
+        let sip_calling = Singleton {
+            idx: position_of_named_child(root, "SIPCALLING"),
+        };
+        let sip_advanced = Singleton {
+            idx: position_of_named_child(root, "SIPADVANCED"),
+        };
+        let sip_call_slots = discover_run(root, "SIPCALLSLOTS");
+        let sip_registration = match sip_calling.idx {
+            Some(sc_idx) => {
+                let sc = &root.children[sc_idx as usize];
+                match position_of_named_child(sc, "SIPREGISTRATION") {
+                    Some(first) => TwoLevel {
+                        parent: Some(sc_idx),
+                        first,
+                        count: count_consecutive_named(sc, first, "SIPREGISTRATION"),
+                    },
+                    None => TwoLevel {
+                        parent: Some(sc_idx),
+                        first: 0,
+                        count: 0,
+                    },
+                }
+            }
+            None => TwoLevel {
+                parent: None,
+                first: 0,
+                count: 0,
+            },
+        };
+
         // SOUNDPADS container under root (optional). Inside it, PAD nodes form a
         // contiguous run; the ordinal in that run is the pad index (== the pad's
         // own `padIdx`). Two-level addressing, so we record the container index
@@ -324,6 +365,10 @@ impl Layout {
             gui,
             system,
             pad,
+            sip_calling,
+            sip_advanced,
+            sip_call_slots,
+            sip_registration,
         })
     }
 
@@ -552,6 +597,66 @@ impl Layout {
     /// True if this single-level path points at the `SYSTEM` node.
     pub fn is_system_path(&self, path: &[u32]) -> bool {
         self.system.is_path(path)
+    }
+
+    /// Root-down path to the singleton `SIPCALLING` node, if present. Owns
+    /// the SIP hosting flags, invite code, call-setup channels, and
+    /// subscription meters.
+    pub fn sip_calling_path(&self) -> Option<Vec<u32>> {
+        self.sip_calling.path()
+    }
+
+    /// True if this single-level path points at the `SIPCALLING` node.
+    pub fn is_sip_calling_path(&self, path: &[u32]) -> bool {
+        self.sip_calling.is_path(path)
+    }
+
+    /// Root-down path to the singleton `SIPADVANCED` node, if present. Owns
+    /// the codec / audio-routing / DTMF / jitter-buffer / account
+    /// credentials / NAT-traversal settings.
+    pub fn sip_advanced_path(&self) -> Option<Vec<u32>> {
+        self.sip_advanced.path()
+    }
+
+    /// True if this single-level path points at the `SIPADVANCED` node.
+    pub fn is_sip_advanced_path(&self, path: &[u32]) -> bool {
+        self.sip_advanced.is_path(path)
+    }
+
+    /// Root-down path to the `n`th `SIPCALLSLOTS` node (single-level).
+    /// Duo firmware carries three consecutive call slots. `None` if `n` is
+    /// past the discovered run.
+    pub fn sip_call_slots_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.sip_call_slots.path(n)
+    }
+
+    /// Inverse of [`Self::sip_call_slots_path`]: the call-slot ordinal, if
+    /// this single-level path falls inside the discovered run.
+    pub fn sip_call_slots_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.sip_call_slots.index_from_path(path)
+    }
+
+    /// Number of discovered `SIPCALLSLOTS` nodes.
+    pub fn sip_call_slots_count(&self) -> u8 {
+        self.sip_call_slots.count
+    }
+
+    /// Root-down two-level path to the `n`th `SIPREGISTRATION` child under
+    /// `SIPCALLING`. Duo firmware carries two registration slots. `None` if
+    /// `n` is past the discovered run or SIPCALLING is absent.
+    pub fn sip_registration_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.sip_registration.path(n)
+    }
+
+    /// Inverse of [`Self::sip_registration_path`]: the registration ordinal
+    /// this two-level path identifies, if any.
+    pub fn sip_registration_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.sip_registration.index_from_path(path)
+    }
+
+    /// Number of discovered `SIPREGISTRATION` child nodes under SIPCALLING.
+    pub fn sip_registration_count(&self) -> u8 {
+        self.sip_registration.count
     }
 
     /// Root-down path to the `n`th `HEADPHONE` node (single-level). `n` is the
