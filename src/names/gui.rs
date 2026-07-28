@@ -21,7 +21,7 @@ wire_param_enum! {
     /// - `eqParamModeLow` / `eqParamModeMid` / `eqParamModeHigh` live on `GUI`,
     ///   not on the channel strip: they select which EQ band the touchscreen is
     ///   editing (UI focus), so they are intentionally absent from
-    ///   [`ChannelParam`].
+    ///   [`crate::ChannelParam`].
     GuiParam {
     // Language.
     Lang => "lang",

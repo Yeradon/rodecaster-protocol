@@ -8,7 +8,7 @@ use std::fmt;
 wire_param_enum! {
     /// A master-bus parameter: one of the flat properties the device carries on
     /// the single `MASTERCHANNEL` node. There is exactly one master bus, so this
-    /// family takes no addressing key (unlike [`ChannelParam`], which is
+    /// family takes no addressing key (unlike [`crate::ChannelParam`], which is
     /// per-fader). Covers the master Compellor (RODE's compressor/leveller) and
     /// the master delay.
     MasterParam {

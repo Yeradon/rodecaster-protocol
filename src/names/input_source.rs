@@ -12,7 +12,7 @@ wire_param_enum! {
     /// These are **not** channel-strip params: a source exists independently of
     /// which fader (if any) it is assigned to, and a real fullSync shows every
     /// input* property on `INPUTSOURCE`, never on `CHANNEL`. Address an input
-    /// source by [`Source`] (the source ordinal == `inputId`).
+    /// source by [`crate::Source`] (the source ordinal == `inputId`).
     InputSourceParam {
     InputId => "inputId",
     InputColour => "inputColour",

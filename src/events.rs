@@ -12,7 +12,7 @@
 //!
 //! - `channelInputSource` ([`DeviceEvent::FaderAssignmentChanged`]): written at
 //!   stride 1 from `first_channel`, but echoed back at **stride 6**
-//!   (`0x1C`=fader0, `0x22`=fader1, ...). [`decode_property`] resolves the echo
+//!   (`0x1C`=fader0, `0x22`=fader1, ...). `decode_property` resolves the echo
 //!   with that stride.
 //! - `encoderSignal` ([`DeviceEvent::FaderTouched`]) and `encoderColour`
 //!   ([`DeviceEvent::FaderEncoderColourChanged`]): single-level paths whose

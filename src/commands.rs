@@ -142,7 +142,7 @@ pub enum Command {
     /// values (the unlink does not re-disable or re-mute the cell).
     UnlinkMix { source: Source, mix: MixOutput },
     /// Wake the device display. A fixed, layout-independent message; see
-    /// [`SCREEN_TOUCHED_FRAME`].
+    /// `SCREEN_TOUCHED_FRAME`.
     ScreenTouched,
     /// Request the device power off.
     PowerOff,

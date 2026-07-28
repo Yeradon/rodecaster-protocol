@@ -42,7 +42,16 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        src = craneLib.cleanCargoSource ./.;
+        # Crane's default Cargo filter excludes binary fixture extensions. Keep
+        # the real-hardware corpus in every test/clippy derivation so Nix and
+        # local Cargo validate the same source tree.
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type:
+            (craneLib.filterCargoSources path type)
+            || (builtins.match ".*/tests/fixtures(/.*)?" (toString path) != null);
+        };
         commonArgs = {
           inherit src;
           strictDeps = true;
@@ -65,6 +74,14 @@
             }
           );
           fmt = craneLib.cargoFmt { inherit src; };
+          doc = craneLib.cargoDoc (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoDocExtraArgs = "--no-deps";
+              RUSTDOCFLAGS = "-D warnings";
+            }
+          );
           test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
         };
 

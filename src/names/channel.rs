@@ -9,7 +9,7 @@ wire_param_enum! {
     ///
     /// The preamp controls (gain, 48V, mic type) are **not** here: a source
     /// exists independently of which fader it is assigned to, so they live on
-    /// the separate `INPUTSOURCE` node and are typed as [`InputSourceParam`].
+    /// the separate `INPUTSOURCE` node and are typed as [`crate::InputSourceParam`].
     /// `CHANNEL` only references its source via `channelInputSource`.
     ChannelParam {
     // EQ (3-band parametric).
@@ -78,7 +78,7 @@ wire_param_enum! {
     // inputColour, ...) are intentionally NOT here. A real fullSync proves they
     // live on the separate `INPUTSOURCE` node (one per source), not on `CHANNEL`.
     // CHANNEL only references a source via `channelInputSource`. The preamp
-    // controls are typed as [`InputSourceParam`] and addressed by [`Source`].
+    // controls are typed as `InputSourceParam` and addressed by `Source`.
     // Channel-level flags.
     AdvancedProcessing => "channelAdvancedProcessing",
     BypassProcessing => "channelBypassProcessing",

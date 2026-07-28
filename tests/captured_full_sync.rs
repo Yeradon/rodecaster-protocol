@@ -6,7 +6,10 @@
 
 use rodecaster_protocol::change_frame::{decode, encode_full_sync, ChangeFrame};
 use rodecaster_protocol::frame::Packet;
-use rodecaster_protocol::{decode_event, DeviceEvent, DeviceModel, Layout, Value};
+use rodecaster_protocol::{
+    decode_event, Command, DeviceEvent, DeviceModel, Fader, Layout, ProtocolSession, SessionError,
+    SessionUpdate, Value,
+};
 
 const DUO_174: &[u8] = include_bytes!("fixtures/duo/fw-1.7.4/full-sync.frame");
 
@@ -41,6 +44,84 @@ fn duo_174_full_sync_contract() {
         find_property(&root, "systemFirmwareVersion"),
         Some(&Value::String("1.7.4".to_string()))
     );
+}
+
+#[test]
+fn high_level_session_discovers_duo_capabilities() {
+    let (packet, _) = Packet::from_bytes(DUO_174).unwrap();
+    let mut session = ProtocolSession::new();
+    let SessionUpdate::Ready { initial_events } = session.ingest(&packet.payload).unwrap() else {
+        panic!("full sync must ready the session");
+    };
+
+    let capabilities = session.capabilities().expect("discovered capabilities");
+    assert_eq!(capabilities.model(), DeviceModel::Duo);
+    assert_eq!(capabilities.firmware(), Some("1.7.4"));
+    assert_eq!(capabilities.faders().len(), 9);
+    assert_eq!(capabilities.sources().len(), 19);
+    assert_eq!(capabilities.mix_outputs().len(), 13);
+    assert!(capabilities.supports_fader(Fader::Physical4));
+    assert!(!capabilities.supports_fader(Fader::Physical5));
+    assert_eq!(initial_events.len(), 3_068);
+
+    let payloads = session
+        .encode(&Command::SetFaderMute {
+            fader: Fader::Physical4,
+            mute: true,
+        })
+        .expect("command supported by captured Duo topology");
+    assert_eq!(payloads.len(), 1);
+    assert!(matches!(
+        decode_event(&payloads[0], session.layout().unwrap()),
+        Some(DeviceEvent::FaderMuteChanged {
+            fader: Fader::Physical4,
+            muted: true,
+        })
+    ));
+
+    assert!(matches!(
+        session.encode(&Command::SetFaderMute {
+            fader: Fader::Physical5,
+            mute: true,
+        }),
+        Err(SessionError::Encode(_))
+    ));
+}
+
+#[test]
+fn high_level_session_drops_stale_layout_after_failed_resync() {
+    let (packet, _) = Packet::from_bytes(DUO_174).unwrap();
+    let mut session = ProtocolSession::new();
+    session.ingest(&packet.payload).unwrap();
+    assert!(session.is_ready());
+
+    let unsupported = rodecaster_protocol::Node {
+        name: "DEVICE".to_string(),
+        properties: vec![],
+        children: vec![],
+    };
+    assert!(matches!(
+        session.ingest(&encode_full_sync(&unsupported)),
+        Err(SessionError::Layout(_))
+    ));
+    assert!(!session.is_ready());
+    assert!(session.capabilities().is_none());
+}
+
+#[test]
+fn high_level_session_invalidates_captured_layout_on_structure_change() {
+    let (packet, _) = Packet::from_bytes(DUO_174).unwrap();
+    let mut session = ProtocolSession::new();
+    session.ingest(&packet.payload).unwrap();
+    assert!(session.is_ready());
+
+    let child_moved = [0x05, 0x00, 0x01, 0x00, 0x01, 0x01];
+    assert_eq!(
+        session.ingest(&child_moved).unwrap(),
+        SessionUpdate::NeedsFullSync
+    );
+    assert!(!session.is_ready());
+    assert!(session.capabilities().is_none());
 }
 
 #[test]

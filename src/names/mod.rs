@@ -25,7 +25,7 @@
 //!
 //! ## Module layout
 //!
-//! [`macros`] defines the one `wire_param_enum!` macro; [`core`] holds the
+//! `macros` defines the one `wire_param_enum!` macro; `core` holds the
 //! model-independent vocabulary ([`DeviceModel`], [`MixOutput`], [`Source`],
 //! [`Fader`]); and each node-scoped property family lives in its own file
 //! (`channel`, `input_source`, `master`, ...). Every type is re-exported here so

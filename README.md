@@ -1,67 +1,82 @@
 # rodecaster-protocol
 
-A dependency-free Rust codec for the RODECaster Pro II / Duo control-wire protocol.
+A pure-Rust protocol library for the RØDECaster Pro II and RØDECaster Duo.
 
-The RODECaster desktop app and firmware talk over a JUCE binary protocol: device
-state is a `juce::ValueTreeSynchroniser` full-sync, and every value inside it is
-a `juce::var` (the `VariantStreamMarker` set). This crate implements that codec in
-both directions, plus the transport frame, so tools can read device state and
-build commands without re-deriving the wire format from scratch.
+This crate provides typed commands, events, and session state management over JUCE's `ValueTreeSynchroniser` binary protocol. It is self-contained, dependency-free (`std` only), and transport-agnostic: it handles byte serialization and deserialization without opening sockets or device handles directly.
 
-Extracted from
-[rodecaster-remote-server](https://github.com/Yeradon/rodecaster-remote-server)
-to be a shared, reviewed, well-tested base for the wider RODECaster tooling
-ecosystem.
+## Features
 
-## What's in the box
+- **Typed Commands and Events**: Faders, mutes, solos, audio routing matrix, sound pads, and channel DSP parameters.
+- **Dynamic Layout Discovery**: Reads the device state tree on connection to determine model, fader count, and channel mappings at runtime.
+- **Transport Codecs**: Byte framing for USB HID reports (`usb`) and TCP streams (`frame`).
+- **Low-Level Codecs**: Direct access to underlying `ValueTree` and `juce::var` parsers.
+- **Zero Dependencies**: Pure `std` Rust.
 
-- **`juce_var`** — the `juce::var` codec: `Value` plus `read_value` /
-  `Value::write_to_stream`, covering every marker (int, int64, bool, double,
-  string, array, binary, void) and JUCE `writeCompressedInt` framing.
-- **`valuetree`** — parse a `ValueTreeSynchroniser` full-sync (`0x02` header)
-  into a `Node` / `Property` tree, with `to_xml` for inspection.
-- **`frame`** — the transport `Packet` (`[u32 LE magic][u32 LE length][payload]`).
-- **`command`** — the `RodeCommand` trait that command encoders implement.
+## Getting Started
 
-## JUCE `var` markers
+```rust
+use rodecaster_protocol::{Command, Fader, ProtocolSession, SessionUpdate};
 
-| Marker | Type       | Payload                               |
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = ProtocolSession::new();
+
+    // Ingest binary payloads received over USB HID or TCP
+    let raw_payload: &[u8] = &[];
+    if let Ok(update) = session.ingest(raw_payload) {
+        match update {
+            SessionUpdate::Ready { initial_events } => {
+                let caps = session.capabilities().unwrap();
+                println!("Connected to {} (firmware {:?})", caps.model(), caps.firmware());
+                println!("Loaded {} initial state parameters", initial_events.len());
+            }
+            SessionUpdate::Event(event) => {
+                println!("Event: {event:?}");
+            }
+            SessionUpdate::NeedsFullSync => {
+                eprintln!("Layout changed, resync required");
+            }
+        }
+    }
+
+    // Encode commands to wire payloads
+    if session.is_ready() {
+        let command = Command::SetFaderMute {
+            fader: Fader::Physical1,
+            mute: true,
+        };
+        let payloads = session.encode(&command)?;
+        for payload in payloads {
+            // Write payload via your transport (USB or TCP)
+            let _ = payload;
+        }
+    }
+
+    Ok(())
+}
+```
+
+## Transports
+
+The protocol payload is identical across connection types; only the outer framing differs:
+
+- **USB HID** ([`usb`](src/usb.rs)): For USB device connections. Handles report IDs and 64-byte report chunking.
+- **TCP Stream** ([`frame`](src/frame.rs)): For network connections. Frames messages with a 4-byte magic number (`0xF2B49E2C`) and a 4-byte length prefix.
+
+## JUCE Wire Format
+
+Values inside the protocol use JUCE's binary `var` serialization:
+
+| Marker | Type       | Payload Details                       |
 |--------|------------|---------------------------------------|
 | `0x01` | Int        | 4 bytes, little-endian                |
 | `0x02` | Bool true  | (none)                                |
 | `0x03` | Bool false | (none)                                |
 | `0x04` | Double     | 8 bytes, IEEE 754                     |
-| `0x05` | String     | UTF-8, NUL-terminated                 |
+| `0x05` | String     | UTF-8, null-terminated                |
 | `0x06` | Int64      | 8 bytes, little-endian                |
-| `0x07` | Array      | compressed-int count, then N values   |
-| `0x08` | Binary     | compressed-int length, then raw bytes |
+| `0x07` | Array      | Compressed-int count, then N values   |
+| `0x08` | Binary     | Compressed-int length, then raw bytes |
 | `0x09` | Undefined  | (none)                                |
-
-Each value is framed by `writeCompressedInt(1 + payload_len)`, then the marker
-byte, then the payload.
-
-## Usage
-
-```rust
-use rodecaster_protocol::{parse_valuetree, Value};
-
-// Decode a device full-sync state dump into a tree, then inspect it as XML.
-// `Node` also implements `Display`, so `format!("{root}")` works too.
-if let Some(root) = parse_valuetree(payload) {
-    print!("{}", root.to_xml(0));
-}
-
-// Encode a juce::var value to its wire bytes.
-let mut buf = Vec::new();
-Value::Int(42).write_to_stream(&mut buf);
-```
-
-## Status
-
-`0.1.x`: the API may shift before `1.0`. The codec is validated against a real
-~101 KB device capture (521 nodes, 4,451 properties) and byte-exact JUCE
-reference frames. Dependency-free (`std` only), so adopting it never pulls a
-dependency tree.
 
 ## License
 

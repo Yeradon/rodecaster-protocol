@@ -1,71 +1,94 @@
-//! RODECaster Pro II / Duo wire protocol: typed commands, typed device events,
-//! and the JUCE codec they sit on.
+//! A pure-Rust protocol library for controlling RØDECaster Pro II and RØDECaster Duo audio consoles.
 //!
-//! The device speaks `juce::ValueTreeSynchroniser` over a length-prefixed
-//! transport. This crate owns the wire format once, for both directions, and
-//! exposes it through three layers:
+//! This crate implements the binary protocol used by RØDECaster hardware and
+//! desktop applications. It provides high-level typed commands and events while
+//! leaving transport I/O (sockets, USB handles) under your control.
 //!
-//! ## Layer 1: JUCE serialization (the byte format)
+//! # Architecture
 //!
-//! - [`juce_var`]: per-value `juce::var` codec ([`Value`], [`read_value`]).
-//! - [`valuetree`]: ValueTree tree decode ([`parse_valuetree`], [`Node`]).
-//! - [`frame`]: bridge transport frame `[magic][len][body]` ([`Packet`]).
-//! - [`usb`]: USB HID transport frame `[len][body]` chunked into HID reports
-//!   ([`usb::Packet`]). Same binary-framing level as [`frame`]; the device
-//!   speaks the identical message body over both. Opening the socket / hidraw
-//!   and the read/write loop stay in the consumer, for both transports.
+//! The library is organized into three distinct layers:
 //!
-//! ## Layer 2: JUCE `ValueTreeSynchroniser` change-frames
+//! 1. **Domain Layer (High-Level)**:
+//!    - [`ProtocolSession`]: The main entry point for managing connection state and device lifecycle.
+//!    - [`Command`]: Strongly-typed commands to mute faders, change volumes, trigger sound pads, and route audio.
+//!    - [`DeviceEvent`]: Strongly-typed inbound events representing fader moves, button presses, and state updates.
+//!    - [`DeviceCapabilities`]: Query physical and virtual fader counts, available input sources, and hardware model.
 //!
-//! - [`change_frame`]: decode/encode of all six JUCE change types
-//!   (`propertyChanged`, `fullSync`, `childAdded`, `childRemoved`,
-//!   `childMoved`, `propertyRemoved`). Path-aware, generic over property name.
+//! 2. **Transport Framing**:
+//!    - [`usb`]: Chunking and reassembly for 64-byte USB HID reports.
+//!    - [`frame`]: Framing for TCP network streams using magic header and length prefix.
 //!
-//! ## Layer 3: typed Rodecaster vocabulary
+//! 3. **Protocol Primitives (Low-Level)**:
+//!    - [`valuetree`]: Parses JUCE `ValueTree` snapshots into structured [`Node`] and [`Property`] trees.
+//!    - [`juce_var`]: Encodes and decodes typed [`Value`] items according to JUCE `var` binary formatting.
+//!    - [`change_frame`]: Encodes and decodes granular `ValueTreeSynchroniser` change opcodes.
 //!
-//! - [`layout::Layout`]: per-device address discovery from a fullSync. Walks
-//!   the parsed tree by node name and records where the addressable families
-//!   (`PHYSICALINTERFACE`, `FADER`, `CHANNEL`, `MIX`) sit. **No hardcoded
-//!   positions**: a future firmware layout shift surfaces at build time, not
-//!   silently routes wrong.
-//! - [`commands::Command`]: outgoing typed commands. `Command::encode(&Layout)`
-//!   produces JUCE-faithful change-frame payloads, ID arithmetic lifted from
-//!   the Layout, not duplicated per encoder.
-//! - [`events::DeviceEvent`]: inbound typed events. [`decode_event`] resolves
-//!   each wire path through a Layout to a typed Rodecaster event, falling
-//!   back to [`events::DeviceEvent::Unknown`] for properties not yet typed
-//!   (rather than silently dropping).
+//! # Quickstart
 //!
-//! ## Lifecycle
+//! Most applications interact directly with [`ProtocolSession`]:
 //!
-//! ```text
-//!   transport bytes ─▶ Packet::from_bytes ─▶ payload
-//!   payload + Layout ─▶ decode_event ─▶ DeviceEvent
+//! ```rust
+//! use rodecaster_protocol::{Command, Fader, ProtocolSession, SessionUpdate};
 //!
-//!   Command + Layout ─▶ encode ─▶ payload ─▶ Packet::new ─▶ transport bytes
+//! # fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut session = ProtocolSession::new();
 //!
-//!   fullSync payload ─▶ parse_valuetree + Layout::from_full_sync (rebuild on resync)
+//! // Pass raw payloads received from your transport (USB HID or TCP)
+//! let raw_payload: &[u8] = &[];
+//! if let Ok(update) = session.ingest(raw_payload) {
+//!     match update {
+//!         SessionUpdate::Ready { initial_events } => {
+//!             let caps = session.capabilities().unwrap();
+//!             println!("Connected to {} with {} faders", caps.model(), caps.faders().len());
+//!             println!("Initial state contains {} events", initial_events.len());
+//!         }
+//!         SessionUpdate::Event(event) => {
+//!             println!("Device event: {event:?}");
+//!         }
+//!         SessionUpdate::NeedsFullSync => {
+//!             println!("Device topology changed; request full sync");
+//!         }
+//!     }
+//! }
+//!
+//! // Send commands once the session is ready
+//! if session.is_ready() {
+//!     let command = Command::SetFaderMute {
+//!         fader: Fader::Physical1,
+//!         mute: true,
+//!     };
+//!     let packets = session.encode(&command)?;
+//!     for packet in packets {
+//!         // Send packet bytes to device via USB or TCP
+//!         let _ = packet;
+//!     }
+//! }
+//! # Ok(())
+//! # }
 //! ```
-//!
-//! Hold one `Layout` per connected device; replace the whole value on each
-//! fullSync. The crate is plain immutable data, `Send + Sync`, no internal
-//! locking. Synchronization is the consumer's call.
 
+pub mod capabilities;
 pub mod change_frame;
-pub mod command;
 pub mod commands;
 pub mod events;
 pub mod frame;
 pub mod juce_var;
 pub mod layout;
 pub mod names;
+pub mod session;
+pub mod trigger;
 pub mod usb;
 pub mod valuetree;
 
+#[doc(hidden)]
+pub mod test_fixtures;
+
+pub use capabilities::DeviceCapabilities;
 pub use change_frame::ChangeFrame;
-pub use command::RodeCommand;
 pub use commands::Command;
-pub use events::{decode_event, DeviceEvent, MixLinkDirection, MixLinkRequestOrigin};
+pub use events::{
+    decode_event, decode_event_from_frame, DeviceEvent, MixLinkDirection, MixLinkRequestOrigin,
+};
 pub use frame::{frame_payload, scan_frame, FrameScan, Packet, MAGIC_HEADER};
 pub use juce_var::{read_value, Reader, Value};
 pub use layout::Layout;
@@ -73,12 +96,14 @@ pub use names::{
     AppParam, AudioParam, BuildParam, ChannelParam, CurrentShowParam, DeviceModel, DuckerParam,
     EffectsParam, Fader, FxPresetParam, GuiParam, HeadphoneParam, InputSourceParam, MasterParam,
     MeterParam, MixMinusesParam, MixOutput, NetworkParam, OutputParam, PadParam, PadRecorderParam,
-    PlayerParam, RadioParam, RadioRxParam, RadioTxParam, RcSyncMixParam, RecorderParam,
-    RecordingParam, RecordingsParam, ShowControlParam, ShowParam, SipAdvancedParam,
-    SipCallSlotsParam, SipCallingParam, SipRegistrationParam, Source, StorageVolumeParam,
-    StreamerXMixPresetParam, StreamerXStreamMixParam, SystemParam, TestParam, ThemeParam,
-    WifiScanResultParam,
+    ParseFaderError, ParseMixOutputError, ParseSourceError, PlayerParam, RadioParam, RadioRxParam,
+    RadioTxParam, RcSyncMixParam, RecorderParam, RecordingParam, RecordingsParam, ShowControlParam,
+    ShowParam, SipAdvancedParam, SipCallSlotsParam, SipCallingParam, SipRegistrationParam, Source,
+    StorageVolumeParam, StreamerXMixPresetParam, StreamerXStreamMixParam, SystemParam, TestParam,
+    ThemeParam, WifiScanResultParam,
 };
+pub use session::{ProtocolSession, SessionError, SessionUpdate};
+pub use trigger::{TriggerOrigin, TriggerPhase};
 pub use valuetree::{parse_valuetree, Node, Property};
 
 /// Compile-time guarantee that the public types stay `Send + Sync` so
@@ -88,57 +113,14 @@ pub use valuetree::{parse_valuetree, Node, Property};
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Layout>();
+    assert_send_sync::<DeviceCapabilities>();
+    assert_send_sync::<ProtocolSession>();
+    assert_send_sync::<SessionError>();
+    assert_send_sync::<SessionUpdate>();
     assert_send_sync::<Command>();
     assert_send_sync::<DeviceEvent>();
-    assert_send_sync::<MixLinkDirection>();
-    assert_send_sync::<MixLinkRequestOrigin>();
     assert_send_sync::<ChangeFrame>();
     assert_send_sync::<Value>();
     assert_send_sync::<Node>();
-    assert_send_sync::<Property>();
     assert_send_sync::<Packet>();
-    assert_send_sync::<usb::Packet>();
-    assert_send_sync::<DeviceModel>();
-    assert_send_sync::<Source>();
-    assert_send_sync::<MixOutput>();
-    assert_send_sync::<Fader>();
-    assert_send_sync::<ChannelParam>();
-    assert_send_sync::<InputSourceParam>();
-    assert_send_sync::<MasterParam>();
-    assert_send_sync::<OutputParam>();
-    assert_send_sync::<DuckerParam>();
-    assert_send_sync::<RecorderParam>();
-    assert_send_sync::<PlayerParam>();
-    assert_send_sync::<HeadphoneParam>();
-    assert_send_sync::<EffectsParam>();
-    assert_send_sync::<GuiParam>();
-    assert_send_sync::<PadParam>();
-    assert_send_sync::<SystemParam>();
-    assert_send_sync::<NetworkParam>();
-    assert_send_sync::<StorageVolumeParam>();
-    assert_send_sync::<RecordingsParam>();
-    assert_send_sync::<RecordingParam>();
-    assert_send_sync::<AudioParam>();
-    assert_send_sync::<BuildParam>();
-    assert_send_sync::<AppParam>();
-    assert_send_sync::<ThemeParam>();
-    assert_send_sync::<CurrentShowParam>();
-    assert_send_sync::<ShowParam>();
-    assert_send_sync::<ShowControlParam>();
-    assert_send_sync::<MeterParam>();
-    assert_send_sync::<SipCallingParam>();
-    assert_send_sync::<SipRegistrationParam>();
-    assert_send_sync::<SipCallSlotsParam>();
-    assert_send_sync::<SipAdvancedParam>();
-    assert_send_sync::<StreamerXMixPresetParam>();
-    assert_send_sync::<StreamerXStreamMixParam>();
-    assert_send_sync::<FxPresetParam>();
-    assert_send_sync::<PadRecorderParam>();
-    assert_send_sync::<TestParam>();
-    assert_send_sync::<WifiScanResultParam>();
-    assert_send_sync::<RadioParam>();
-    assert_send_sync::<RadioTxParam>();
-    assert_send_sync::<RadioRxParam>();
-    assert_send_sync::<MixMinusesParam>();
-    assert_send_sync::<RcSyncMixParam>();
 };

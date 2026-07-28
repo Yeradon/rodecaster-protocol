@@ -15,9 +15,9 @@
 //! Every node family reduces to one of three reusable shapes, so the per-family
 //! path math is written once each and the [`Layout`] methods just delegate:
 //!
-//! - [`Singleton`]: one node, no index (`MASTERCHANNEL`, `OUTPUT`, `DUCKER`, ...).
-//! - [`Indexed`]: a single-level run at root (`CHANNEL`, `INPUTSOURCE`, ...).
-//! - [`TwoLevel`]: a run of children under a container (`FADER`, `PAD`).
+//! - `Singleton`: one node, no index (`MASTERCHANNEL`, `OUTPUT`, `DUCKER`, ...).
+//! - `Indexed`: a single-level run at root (`CHANNEL`, `INPUTSOURCE`, ...).
+//! - `TwoLevel`: a run of children under a container (`FADER`, `PAD`).
 //!
 //! `MIX` is the one exception: it is a 2D source-major matrix with stride
 //! arithmetic, so it keeps bespoke methods rather than a shared shape.
