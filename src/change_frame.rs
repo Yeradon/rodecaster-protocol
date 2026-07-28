@@ -103,49 +103,64 @@ impl ChangeFrame {
 pub fn decode(payload: &[u8]) -> Option<ChangeFrame> {
     let mut reader = Reader::new(payload);
     let change_type = reader.read_u8()?;
-    match change_type {
+    let frame = match change_type {
         PROPERTY_CHANGED => {
             let path = read_path(&mut reader)?;
             let name = reader.read_cstring()?.to_string();
             let value = reader.read_value()?;
-            Some(ChangeFrame::PropertyChanged { path, name, value })
+            ChangeFrame::PropertyChanged { path, name, value }
         }
         FULL_SYNC => {
             let root = parse_node(&mut reader)?;
-            Some(ChangeFrame::FullSync { root })
+            ChangeFrame::FullSync { root }
         }
         CHILD_ADDED => {
             let path = read_path(&mut reader)?;
             let index = read_compint_u32(&mut reader)?;
             let subtree = parse_node(&mut reader)?;
-            Some(ChangeFrame::ChildAdded {
+            ChangeFrame::ChildAdded {
                 path,
                 index,
                 subtree,
-            })
+            }
         }
         CHILD_REMOVED => {
             let path = read_path(&mut reader)?;
             let old_index = read_compint_u32(&mut reader)?;
-            Some(ChangeFrame::ChildRemoved { path, old_index })
+            ChangeFrame::ChildRemoved { path, old_index }
         }
         CHILD_MOVED => {
             let path = read_path(&mut reader)?;
             let old_index = read_compint_u32(&mut reader)?;
             let new_index = read_compint_u32(&mut reader)?;
-            Some(ChangeFrame::ChildMoved {
+            ChangeFrame::ChildMoved {
                 path,
                 old_index,
                 new_index,
-            })
+            }
         }
         PROPERTY_REMOVED => {
             let path = read_path(&mut reader)?;
             let name = reader.read_cstring()?.to_string();
-            Some(ChangeFrame::PropertyRemoved { path, name })
+            ChangeFrame::PropertyRemoved { path, name }
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    // A transport packet contains exactly one change frame. Accepting trailing
+    // bytes hides framing bugs and makes corrupted fixtures appear valid.
+    (reader.remaining() == 0).then_some(frame)
+}
+
+/// Encode a complete `fullSync` change-frame payload.
+///
+/// The returned bytes start with JUCE's full-sync change type and contain the
+/// complete [`Node`] stream. The transport [`crate::frame::Packet`] wraps this
+/// payload for the TCP wire.
+pub fn encode_full_sync(root: &Node) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(FULL_SYNC);
+    root.write_to_stream(&mut out);
+    out
 }
 
 /// Encode a `propertyChanged` frame.
@@ -285,6 +300,21 @@ mod tests {
                 value: Value::Bool(false),
             }
         );
+    }
+
+    #[test]
+    fn full_sync_round_trips_via_encoder() {
+        let root = Node {
+            name: "ROOT".to_string(),
+            properties: vec![],
+            children: vec![Node {
+                name: "CHILD".to_string(),
+                properties: vec![],
+                children: vec![],
+            }],
+        };
+        let payload = encode_full_sync(&root);
+        assert_eq!(decode(&payload), Some(ChangeFrame::FullSync { root }));
     }
 
     #[test]
