@@ -665,9 +665,15 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
                     return DeviceEvent::FaderCueChanged { fader, enabled };
                 }
             }
-            // "channelInputSource" is NOT handled here: its echo uses stride-6
-            // addressing (not the stride-1 `channel_index_from_path`), so it is
-            // resolved separately below.
+            "channelInputSource" => {
+                let source = value
+                    .as_ref()
+                    .and_then(Value::as_int)
+                    .filter(|&s| s >= 0)
+                    .and_then(|s| u8::try_from(s).ok())
+                    .and_then(Source::from_protocol);
+                return DeviceEvent::FaderAssignmentChanged { fader, source };
+            }
             _ => {}
         }
     }
@@ -780,17 +786,22 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    // channelInputSource echo: addressed at stride 6 from `first_channel`,
-    // asymmetric with the stride-1 write path. See module docs. A wire value
-    // < 0 means the slot was unassigned.
+    // channelInputSource echo: resolves via stride-1 channel_index_from_path first,
+    // falling back to stride-6 echo addressing when node is offset-addressed.
     if name == "channelInputSource" {
-        if let Some(fader) = path
-            .first()
-            .and_then(|raw| raw.checked_sub(layout.first_channel()))
-            .map(|offset| offset / 6)
-            .filter(|&idx| idx < layout.channel_count() as u32)
-            .and_then(|idx| Fader::from_index(model, idx as u8))
-        {
+        let fader_opt = layout
+            .channel_index_from_path(path)
+            .and_then(|idx| Fader::from_index(model, idx))
+            .or_else(|| {
+                path.first()
+                    .and_then(|raw| raw.checked_sub(layout.first_channel()))
+                    .filter(|&offset| offset % 6 == 0)
+                    .map(|offset| offset / 6)
+                    .filter(|&idx| idx < layout.channel_count() as u32)
+                    .and_then(|idx| Fader::from_index(model, idx as u8))
+            });
+
+        if let Some(fader) = fader_opt {
             let source = value
                 .as_ref()
                 .and_then(Value::as_int)

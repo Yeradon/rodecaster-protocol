@@ -303,14 +303,15 @@ impl Source {
 impl FromStr for Source {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+        let clean = s.to_lowercase().replace([' ', '_', '-'], "");
+        match clean.as_str() {
             "combo1" | "mic1" => Ok(Self::Combo1),
             "combo2" | "mic2" => Ok(Self::Combo2),
             "combo3" | "mic3" => Ok(Self::Combo3),
             "combo4" | "mic4" => Ok(Self::Combo4),
-            "combo1_2" | "combo12" => Ok(Self::Combo1_2),
-            "combo2_3" | "combo23" => Ok(Self::Combo2_3),
-            "combo3_4" | "combo34" => Ok(Self::Combo3_4),
+            "combo12" | "combo1+2" => Ok(Self::Combo1_2),
+            "combo23" | "combo2+3" => Ok(Self::Combo2_3),
+            "combo34" | "combo3+4" => Ok(Self::Combo3_4),
             "usb1" => Ok(Self::Usb1),
             "chat" => Ok(Self::Chat),
             "usb2" => Ok(Self::Usb2),
@@ -318,11 +319,11 @@ impl FromStr for Source {
             "soundpad" | "pad" => Ok(Self::SoundPad),
             "virtualgame" | "game" | "vgame" => Ok(Self::VirtualGame),
             "virtualmusic" | "music" | "vmusic" => Ok(Self::VirtualMusic),
-            "virtuala" | "va" => Ok(Self::VirtualA),
-            "virtualb" | "vb" => Ok(Self::VirtualB),
-            "callme1" | "cm1" => Ok(Self::CallMe1),
-            "callme2" | "cm2" => Ok(Self::CallMe2),
-            "callme3" | "cm3" => Ok(Self::CallMe3),
+            "virtuala" | "va" | "a" => Ok(Self::VirtualA),
+            "virtualb" | "vb" | "b" => Ok(Self::VirtualB),
+            "callme1" | "cm1" | "caller1" => Ok(Self::CallMe1),
+            "callme2" | "cm2" | "caller2" => Ok(Self::CallMe2),
+            "callme3" | "cm3" | "caller3" => Ok(Self::CallMe3),
             _ => Err(format!("unknown source: {s} (try: combo1, bt, game, cm1)")),
         }
     }
