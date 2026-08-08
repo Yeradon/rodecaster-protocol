@@ -1089,3 +1089,68 @@ fn unlink_callme_golden_bytes() {
     expected.extend_from_slice(&[0x01, 0x07, 0x08, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02]); // var Binary blob
     assert_eq!(bytes[0], expected);
 }
+
+#[test]
+fn set_remaining_param_families_encode_cleanly() {
+    fn n(name: &str) -> Node {
+        Node {
+            name: name.to_string(),
+            properties: vec![],
+            children: vec![],
+        }
+    }
+    fn nc(name: &str, children: Vec<Node>) -> Node {
+        Node {
+            name: name.to_string(),
+            properties: vec![],
+            children,
+        }
+    }
+
+    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
+    let mut children = vec![phys, n("CHANNEL")];
+    for _ in 0..13 {
+        children.push(n("MIX"));
+    }
+    children.extend(vec![
+        n("NETWORK"),
+        n("AUDIO"),
+        n("BUILD"),
+        n("APP"),
+        n("THEME"),
+        n("CURRENTSHOW"),
+        n("SHOWCONTROL"),
+        n("RECORDINGS"),
+        n("RADIO"),
+        nc("SHOWS", vec![nc("SHOW", vec![])]),
+        nc("RECORDINGS", vec![nc("RECORDING", vec![])]),
+        n("STORAGEVOLUME"),
+        n("RADIOTX"),
+        n("RADIORX"),
+        n("WIFISCANRESULT"),
+        n("STREAMERXMIXPRESET"),
+        n("STREAMERXSTREAMMIX"),
+        n("RCSYNCMIX"),
+        n("MIXMINUSES"),
+    ]);
+    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+
+    let cmd_network = Command::SetNetworkParam {
+        param: NetworkParam::BtVisible,
+        value: Value::Bool(true),
+    };
+    assert_eq!(cmd_network.encode(&l).unwrap().len(), 1);
+
+    let cmd_show_control = Command::SetShowControlParam {
+        param: ShowControlParam::NewFromDefaultMuted,
+        value: Value::Bool(true),
+    };
+    assert_eq!(cmd_show_control.encode(&l).unwrap().len(), 1);
+
+    let cmd_show = Command::SetShowParam {
+        show: 0,
+        param: ShowParam::Name,
+        value: Value::String("Test".to_string()),
+    };
+    assert_eq!(cmd_show.encode(&l).unwrap().len(), 1);
+}

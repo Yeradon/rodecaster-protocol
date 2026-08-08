@@ -14,10 +14,13 @@ use crate::change_frame;
 use crate::juce_var::Value;
 use crate::layout::Layout;
 use crate::names::{
-    ChannelParam, DeviceModel, DuckerParam, EffectsParam, Fader, FxPresetParam, GuiParam,
-    HeadphoneParam, InputSourceParam, MasterParam, MixOutput, OutputParam, PadParam,
-    PadRecorderParam, PlayerParam, RecorderParam, SipAdvancedParam, SipCallSlotsParam,
-    SipCallingParam, SipRegistrationParam, Source, SystemParam, TestParam,
+    AppParam, AudioParam, BuildParam, ChannelParam, CurrentShowParam, DeviceModel, DuckerParam,
+    EffectsParam, Fader, FxPresetParam, GuiParam, HeadphoneParam, InputSourceParam, MasterParam,
+    MixMinusesParam, MixOutput, NetworkParam, OutputParam, PadParam, PadRecorderParam, PlayerParam,
+    RadioParam, RadioRxParam, RadioTxParam, RcSyncMixParam, RecorderParam, RecordingParam,
+    RecordingsParam, ShowControlParam, ShowParam, SipAdvancedParam, SipCallSlotsParam,
+    SipCallingParam, SipRegistrationParam, Source, StorageVolumeParam, StreamerXMixPresetParam,
+    StreamerXStreamMixParam, SystemParam, TestParam, ThemeParam, WifiScanResultParam,
 };
 
 /// The single 6-byte trigger payload the device requires on `mixLinkRequest`
@@ -352,6 +355,98 @@ pub enum Command {
         param: FxPresetParam,
         value: Value,
     },
+    /// Set a networking parameter on the singleton `NETWORK` node.
+    SetNetworkParam { param: NetworkParam, value: Value },
+    /// Set an audio engine parameter on the singleton `AUDIO` node.
+    SetAudioParam { param: AudioParam, value: Value },
+    /// Set a build parameter on the singleton `BUILD` node.
+    SetBuildParam { param: BuildParam, value: Value },
+    /// Set a companion-app parameter on the singleton `APP` node.
+    SetAppParam { param: AppParam, value: Value },
+    /// Set a theme parameter on the singleton `THEME` node.
+    SetThemeParam { param: ThemeParam, value: Value },
+    /// Set a current-show parameter on the singleton `CURRENTSHOW` node.
+    SetCurrentShowParam {
+        param: CurrentShowParam,
+        value: Value,
+    },
+    /// Set a show-control parameter on the singleton `SHOWCONTROL` node.
+    SetShowControlParam {
+        param: ShowControlParam,
+        value: Value,
+    },
+    /// Set a recordings-container parameter on the singleton `RECORDINGS` node.
+    SetRecordingsParam {
+        param: RecordingsParam,
+        value: Value,
+    },
+    /// Set a wireless-radio parameter on the singleton `RADIO` node.
+    SetRadioParam { param: RadioParam, value: Value },
+    /// Set a per-show parameter on one of the `SHOW` child nodes under `SHOWS`.
+    SetShowParam {
+        show: u8,
+        param: ShowParam,
+        value: Value,
+    },
+    /// Set a per-recording parameter on one of the `RECORDING` child nodes under `RECORDINGS`.
+    SetRecordingParam {
+        recording: u8,
+        param: RecordingParam,
+        value: Value,
+    },
+    /// Set a storage volume parameter on one of the `STORAGEVOLUME` nodes.
+    SetStorageVolumeParam {
+        volume: u8,
+        param: StorageVolumeParam,
+        value: Value,
+    },
+    /// Set a wireless-radio transmitter parameter on one of the `RADIOTX` nodes.
+    SetRadioTxParam {
+        tx: u8,
+        param: RadioTxParam,
+        value: Value,
+    },
+    /// Set a wireless-radio receiver parameter on one of the `RADIORX` nodes.
+    SetRadioRxParam {
+        rx: u8,
+        param: RadioRxParam,
+        value: Value,
+    },
+    /// Set a WiFi scan result entry parameter on one of the `WIFISCANRESULT` nodes.
+    SetWifiScanResultParam {
+        slot: u8,
+        param: WifiScanResultParam,
+        value: Value,
+    },
+    /// Set a StreamerX mix preset parameter on one of the `STREAMERXMIXPRESET` nodes.
+    SetStreamerXMixPresetParam {
+        preset: u8,
+        param: StreamerXMixPresetParam,
+        value: Value,
+    },
+    /// Set a StreamerX stream mix parameter on one of the `STREAMERXSTREAMMIX` nodes.
+    SetStreamerXStreamMixParam {
+        stream: u8,
+        param: StreamerXStreamMixParam,
+        value: Value,
+    },
+    /// Set an rcSync mix parameter on one of the `RCSYNCMIX` nodes.
+    SetRcSyncMixParam {
+        mix: u8,
+        param: RcSyncMixParam,
+        value: Value,
+    },
+    /// Set a mix-minus parameter on one of the `MIXMINUSES` nodes.
+    SetMixMinusesParam {
+        minuses: u8,
+        param: MixMinusesParam,
+        value: Value,
+    },
+    /// Skip initial setup mode and configure language and timezone.
+    SetupSkip {
+        language: Option<String>,
+        timezone: Option<String>,
+    },
 }
 
 impl Command {
@@ -682,6 +777,287 @@ impl Command {
                     param.as_str(),
                     value,
                 )])
+            }
+            Command::SetNetworkParam { param, value } => {
+                let path = layout
+                    .network_path()
+                    .ok_or(EncodeError::MissingNode { what: "NETWORK" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetAudioParam { param, value } => {
+                let path = layout
+                    .audio_path()
+                    .ok_or(EncodeError::MissingNode { what: "AUDIO" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetBuildParam { param, value } => {
+                let path = layout
+                    .build_path()
+                    .ok_or(EncodeError::MissingNode { what: "BUILD" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetAppParam { param, value } => {
+                let path = layout
+                    .app_path()
+                    .ok_or(EncodeError::MissingNode { what: "APP" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetThemeParam { param, value } => {
+                let path = layout
+                    .theme_path()
+                    .ok_or(EncodeError::MissingNode { what: "THEME" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetCurrentShowParam { param, value } => {
+                let path = layout.current_show_path().ok_or(EncodeError::MissingNode {
+                    what: "CURRENTSHOW",
+                })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetShowControlParam { param, value } => {
+                let path = layout.show_control_path().ok_or(EncodeError::MissingNode {
+                    what: "SHOWCONTROL",
+                })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRecordingsParam { param, value } => {
+                let path = layout
+                    .recordings_path()
+                    .ok_or(EncodeError::MissingNode { what: "RECORDINGS" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRadioParam { param, value } => {
+                let path = layout
+                    .radio_path()
+                    .ok_or(EncodeError::MissingNode { what: "RADIO" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetShowParam { show, param, value } => {
+                let path = layout
+                    .show_path(*show)
+                    .ok_or(EncodeError::MissingNode { what: "SHOW" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRecordingParam {
+                recording,
+                param,
+                value,
+            } => {
+                let path = layout
+                    .recording_path(*recording)
+                    .ok_or(EncodeError::MissingNode { what: "RECORDING" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetStorageVolumeParam {
+                volume,
+                param,
+                value,
+            } => {
+                let path = layout
+                    .storage_volume_path(*volume)
+                    .ok_or(EncodeError::MissingNode {
+                        what: "STORAGEVOLUME",
+                    })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRadioTxParam { tx, param, value } => {
+                let path = layout
+                    .radio_tx_path(*tx)
+                    .ok_or(EncodeError::MissingNode { what: "RADIOTX" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRadioRxParam { rx, param, value } => {
+                let path = layout
+                    .radio_rx_path(*rx)
+                    .ok_or(EncodeError::MissingNode { what: "RADIORX" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetWifiScanResultParam { slot, param, value } => {
+                let path = layout
+                    .wifi_scan_result_path(*slot)
+                    .ok_or(EncodeError::MissingNode {
+                        what: "WIFISCANRESULT",
+                    })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetStreamerXMixPresetParam {
+                preset,
+                param,
+                value,
+            } => {
+                let path =
+                    layout
+                        .streamerx_mix_preset_path(*preset)
+                        .ok_or(EncodeError::MissingNode {
+                            what: "STREAMERXMIXPRESET",
+                        })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetStreamerXStreamMixParam {
+                stream,
+                param,
+                value,
+            } => {
+                let path =
+                    layout
+                        .streamerx_stream_mix_path(*stream)
+                        .ok_or(EncodeError::MissingNode {
+                            what: "STREAMERXSTREAMMIX",
+                        })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetRcSyncMixParam { mix, param, value } => {
+                let path = layout
+                    .rcsync_mix_path(*mix)
+                    .ok_or(EncodeError::MissingNode { what: "RCSYNCMIX" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetMixMinusesParam {
+                minuses,
+                param,
+                value,
+            } => {
+                let path = layout
+                    .mix_minuses_path(*minuses)
+                    .ok_or(EncodeError::MissingNode { what: "MIXMINUSES" })?;
+                Ok(vec![change_frame::encode_property_changed(
+                    &path,
+                    param.as_str(),
+                    value,
+                )])
+            }
+            Command::SetupSkip { language, timezone } => {
+                let mut frames = Vec::new();
+                if let Some(lang) = language {
+                    if let Some(path) = layout.gui_path() {
+                        frames.push(change_frame::encode_property_changed(
+                            &path,
+                            "lang",
+                            &Value::String(lang.clone()),
+                        ));
+                    }
+                }
+                if let Some(tz) = timezone {
+                    if let Some(path) = layout.system_path() {
+                        frames.push(change_frame::encode_property_changed(
+                            &path,
+                            "systemDateTimezone",
+                            &Value::String(tz.clone()),
+                        ));
+                        frames.push(change_frame::encode_property_changed(
+                            &path,
+                            "systemDateTime24h",
+                            &Value::Bool(true),
+                        ));
+                        frames.push(change_frame::encode_property_changed(
+                            &path,
+                            "systemDateTimeOnHome",
+                            &Value::Bool(true),
+                        ));
+                    }
+                }
+                if let Some(path) = layout.show_control_path() {
+                    frames.push(change_frame::encode_property_changed(
+                        &path,
+                        "showControlNewFromDefaultMuted",
+                        &Value::Bool(true),
+                    ));
+                }
+                if let Some(path) = layout.system_path() {
+                    frames.push(change_frame::encode_property_changed(
+                        &path,
+                        "disableAllPhysicalButtons",
+                        &Value::Bool(false),
+                    ));
+                    frames.push(change_frame::encode_property_changed(
+                        &path,
+                        "disableAllLineoutOutputs",
+                        &Value::Bool(false),
+                    ));
+                    frames.push(change_frame::encode_property_changed(
+                        &path,
+                        "disableAllHeadphoneOutputs",
+                        &Value::Bool(false),
+                    ));
+                    frames.push(change_frame::encode_property_changed(
+                        &path,
+                        "systemChannelSelected",
+                        &Value::Int(-1),
+                    ));
+                }
+                Ok(frames)
             }
         }
     }

@@ -22,11 +22,15 @@ pub struct DeviceCapabilities {
     pad_count: u8,
     sip_call_slots_count: u8,
     sip_registration_count: u8,
+    is_in_setup: bool,
 }
 
 impl DeviceCapabilities {
     pub(crate) fn discover(root: &Node, layout: &Layout) -> Self {
         let model = layout.model();
+        let is_in_setup = find_bool_property(root, "disableAllPhysicalButtons").unwrap_or(false)
+            || (find_bool_property(root, "disableAllLineoutOutputs").unwrap_or(false)
+                && find_bool_property(root, "disableAllHeadphoneOutputs").unwrap_or(false));
         Self {
             model,
             firmware: find_string_property(root, "systemFirmwareVersion").map(str::to_owned),
@@ -46,6 +50,7 @@ impl DeviceCapabilities {
             pad_count: layout.pad_count(),
             sip_call_slots_count: layout.sip_call_slots_count(),
             sip_registration_count: layout.sip_registration_count(),
+            is_in_setup,
         }
     }
 
@@ -106,6 +111,26 @@ impl DeviceCapabilities {
     pub fn sip_registration_count(&self) -> u8 {
         self.sip_registration_count
     }
+
+    /// Whether the device is currently in initial setup mode (outputs or controls disabled).
+    pub fn is_in_setup(&self) -> bool {
+        self.is_in_setup
+    }
+}
+
+fn find_bool_property(node: &Node, name: &str) -> Option<bool> {
+    node.properties
+        .iter()
+        .find(|property| property.name == name)
+        .and_then(|property| match &property.value {
+            Value::Bool(value) => Some(*value),
+            _ => None,
+        })
+        .or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| find_bool_property(child, name))
+        })
 }
 
 fn find_string_property<'a>(node: &'a Node, name: &str) -> Option<&'a str> {

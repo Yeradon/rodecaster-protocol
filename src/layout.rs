@@ -193,6 +193,27 @@ pub struct Layout {
     pad_recorder: Indexed,
     // FXPRESET: two-level under the FXPRESETS container at root.
     fx_preset: TwoLevel,
+    // Singletons at root.
+    network: Singleton,
+    audio: Singleton,
+    build: Singleton,
+    app: Singleton,
+    theme: Singleton,
+    current_show: Singleton,
+    show_control: Singleton,
+    recordings: Singleton,
+    radio: Singleton,
+    // Container-level and indexed runs.
+    show: TwoLevel,
+    recording: TwoLevel,
+    storage_volume: Indexed,
+    radio_tx: Indexed,
+    radio_rx: Indexed,
+    wifi_scan_result: Indexed,
+    streamerx_mix_preset: Indexed,
+    streamerx_stream_mix: Indexed,
+    rcsync_mix: Indexed,
+    mix_minuses: Indexed,
 }
 
 impl Layout {
@@ -386,6 +407,93 @@ impl Layout {
             },
         };
 
+        // Root singletons.
+        let network = Singleton {
+            idx: position_of_named_child(root, "NETWORK"),
+        };
+        let audio = Singleton {
+            idx: position_of_named_child(root, "AUDIO"),
+        };
+        let build = Singleton {
+            idx: position_of_named_child(root, "BUILD"),
+        };
+        let app = Singleton {
+            idx: position_of_named_child(root, "APP"),
+        };
+        let theme = Singleton {
+            idx: position_of_named_child(root, "THEME"),
+        };
+        let current_show = Singleton {
+            idx: position_of_named_child(root, "CURRENTSHOW"),
+        };
+        let show_control = Singleton {
+            idx: position_of_named_child(root, "SHOWCONTROL"),
+        };
+        let recordings = Singleton {
+            idx: position_of_named_child(root, "RECORDINGS"),
+        };
+        let radio = Singleton {
+            idx: position_of_named_child(root, "RADIO"),
+        };
+
+        // SHOW children under SHOWS container.
+        let show = match position_of_named_child(root, "SHOWS") {
+            Some(s_idx) => {
+                let s = &root.children[s_idx as usize];
+                match position_of_named_child(s, "SHOW") {
+                    Some(first) => TwoLevel {
+                        parent: Some(s_idx),
+                        first,
+                        count: count_consecutive_named(s, first, "SHOW"),
+                    },
+                    None => TwoLevel {
+                        parent: Some(s_idx),
+                        first: 0,
+                        count: 0,
+                    },
+                }
+            }
+            None => TwoLevel {
+                parent: None,
+                first: 0,
+                count: 0,
+            },
+        };
+
+        // RECORDING children under RECORDINGS container.
+        let recording = match position_of_named_child(root, "RECORDINGS") {
+            Some(r_idx) => {
+                let r = &root.children[r_idx as usize];
+                match position_of_named_child(r, "RECORDING") {
+                    Some(first) => TwoLevel {
+                        parent: Some(r_idx),
+                        first,
+                        count: count_consecutive_named(r, first, "RECORDING"),
+                    },
+                    None => TwoLevel {
+                        parent: Some(r_idx),
+                        first: 0,
+                        count: 0,
+                    },
+                }
+            }
+            None => TwoLevel {
+                parent: None,
+                first: 0,
+                count: 0,
+            },
+        };
+
+        // Single-level runs at root.
+        let storage_volume = discover_run(root, "STORAGEVOLUME");
+        let radio_tx = discover_run(root, "RADIOTX");
+        let radio_rx = discover_run(root, "RADIORX");
+        let wifi_scan_result = discover_run(root, "WIFISCANRESULT");
+        let streamerx_mix_preset = discover_run(root, "STREAMERXMIXPRESET");
+        let streamerx_stream_mix = discover_run(root, "STREAMERXSTREAMMIX");
+        let rcsync_mix = discover_run(root, "RCSYNCMIX");
+        let mix_minuses = discover_run(root, "MIXMINUSES");
+
         Ok(Layout {
             model,
             channel,
@@ -410,6 +518,25 @@ impl Layout {
             test,
             pad_recorder,
             fx_preset,
+            network,
+            audio,
+            build,
+            app,
+            theme,
+            current_show,
+            show_control,
+            recordings,
+            radio,
+            show,
+            recording,
+            storage_volume,
+            radio_tx,
+            radio_rx,
+            wifi_scan_result,
+            streamerx_mix_preset,
+            streamerx_stream_mix,
+            rcsync_mix,
+            mix_minuses,
         })
     }
 
@@ -743,6 +870,246 @@ impl Layout {
     /// Number of discovered `FXPRESET` child nodes under FXPRESETS.
     pub fn fx_preset_count(&self) -> u8 {
         self.fx_preset.count
+    }
+
+    /// Root-down path to the singleton `NETWORK` node, if present.
+    pub fn network_path(&self) -> Option<Vec<u32>> {
+        self.network.path()
+    }
+
+    /// True if this single-level path points at the `NETWORK` node.
+    pub fn is_network_path(&self, path: &[u32]) -> bool {
+        self.network.is_path(path)
+    }
+
+    /// Root-down path to the singleton `AUDIO` node, if present.
+    pub fn audio_path(&self) -> Option<Vec<u32>> {
+        self.audio.path()
+    }
+
+    /// True if this single-level path points at the `AUDIO` node.
+    pub fn is_audio_path(&self, path: &[u32]) -> bool {
+        self.audio.is_path(path)
+    }
+
+    /// Root-down path to the singleton `BUILD` node, if present.
+    pub fn build_path(&self) -> Option<Vec<u32>> {
+        self.build.path()
+    }
+
+    /// True if this single-level path points at the `BUILD` node.
+    pub fn is_build_path(&self, path: &[u32]) -> bool {
+        self.build.is_path(path)
+    }
+
+    /// Root-down path to the singleton `APP` node, if present.
+    pub fn app_path(&self) -> Option<Vec<u32>> {
+        self.app.path()
+    }
+
+    /// True if this single-level path points at the `APP` node.
+    pub fn is_app_path(&self, path: &[u32]) -> bool {
+        self.app.is_path(path)
+    }
+
+    /// Root-down path to the singleton `THEME` node, if present.
+    pub fn theme_path(&self) -> Option<Vec<u32>> {
+        self.theme.path()
+    }
+
+    /// True if this single-level path points at the `THEME` node.
+    pub fn is_theme_path(&self, path: &[u32]) -> bool {
+        self.theme.is_path(path)
+    }
+
+    /// Root-down path to the singleton `CURRENTSHOW` node, if present.
+    pub fn current_show_path(&self) -> Option<Vec<u32>> {
+        self.current_show.path()
+    }
+
+    /// True if this single-level path points at the `CURRENTSHOW` node.
+    pub fn is_current_show_path(&self, path: &[u32]) -> bool {
+        self.current_show.is_path(path)
+    }
+
+    /// Root-down path to the singleton `SHOWCONTROL` node, if present.
+    pub fn show_control_path(&self) -> Option<Vec<u32>> {
+        self.show_control.path()
+    }
+
+    /// True if this single-level path points at the `SHOWCONTROL` node.
+    pub fn is_show_control_path(&self, path: &[u32]) -> bool {
+        self.show_control.is_path(path)
+    }
+
+    /// Root-down path to the singleton `RECORDINGS` node, if present.
+    pub fn recordings_path(&self) -> Option<Vec<u32>> {
+        self.recordings.path()
+    }
+
+    /// True if this single-level path points at the `RECORDINGS` node.
+    pub fn is_recordings_path(&self, path: &[u32]) -> bool {
+        self.recordings.is_path(path)
+    }
+
+    /// Root-down path to the singleton `RADIO` node, if present.
+    pub fn radio_path(&self) -> Option<Vec<u32>> {
+        self.radio.path()
+    }
+
+    /// True if this single-level path points at the `RADIO` node.
+    pub fn is_radio_path(&self, path: &[u32]) -> bool {
+        self.radio.is_path(path)
+    }
+
+    /// Root-down two-level path to the `n`th `SHOW` child under `SHOWS`.
+    pub fn show_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.show.path(n)
+    }
+
+    /// Inverse of [`Self::show_path`].
+    pub fn show_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.show.index_from_path(path)
+    }
+
+    /// Number of discovered `SHOW` child nodes under SHOWS.
+    pub fn show_count(&self) -> u8 {
+        self.show.count
+    }
+
+    /// Root-down two-level path to the `n`th `RECORDING` child under `RECORDINGS`.
+    pub fn recording_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.recording.path(n)
+    }
+
+    /// Inverse of [`Self::recording_path`].
+    pub fn recording_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.recording.index_from_path(path)
+    }
+
+    /// Number of discovered `RECORDING` child nodes under RECORDINGS.
+    pub fn recording_count(&self) -> u8 {
+        self.recording.count
+    }
+
+    /// Root-down path to the `n`th `STORAGEVOLUME` node.
+    pub fn storage_volume_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.storage_volume.path(n)
+    }
+
+    /// Inverse of [`Self::storage_volume_path`].
+    pub fn storage_volume_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.storage_volume.index_from_path(path)
+    }
+
+    /// Number of discovered `STORAGEVOLUME` nodes.
+    pub fn storage_volume_count(&self) -> u8 {
+        self.storage_volume.count
+    }
+
+    /// Root-down path to the `n`th `RADIOTX` node.
+    pub fn radio_tx_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.radio_tx.path(n)
+    }
+
+    /// Inverse of [`Self::radio_tx_path`].
+    pub fn radio_tx_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.radio_tx.index_from_path(path)
+    }
+
+    /// Number of discovered `RADIOTX` nodes.
+    pub fn radio_tx_count(&self) -> u8 {
+        self.radio_tx.count
+    }
+
+    /// Root-down path to the `n`th `RADIORX` node.
+    pub fn radio_rx_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.radio_rx.path(n)
+    }
+
+    /// Inverse of [`Self::radio_rx_path`].
+    pub fn radio_rx_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.radio_rx.index_from_path(path)
+    }
+
+    /// Number of discovered `RADIORX` nodes.
+    pub fn radio_rx_count(&self) -> u8 {
+        self.radio_rx.count
+    }
+
+    /// Root-down path to the `n`th `WIFISCANRESULT` node.
+    pub fn wifi_scan_result_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.wifi_scan_result.path(n)
+    }
+
+    /// Inverse of [`Self::wifi_scan_result_path`].
+    pub fn wifi_scan_result_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.wifi_scan_result.index_from_path(path)
+    }
+
+    /// Number of discovered `WIFISCANRESULT` nodes.
+    pub fn wifi_scan_result_count(&self) -> u8 {
+        self.wifi_scan_result.count
+    }
+
+    /// Root-down path to the `n`th `STREAMERXMIXPRESET` node.
+    pub fn streamerx_mix_preset_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.streamerx_mix_preset.path(n)
+    }
+
+    /// Inverse of [`Self::streamerx_mix_preset_path`].
+    pub fn streamerx_mix_preset_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.streamerx_mix_preset.index_from_path(path)
+    }
+
+    /// Number of discovered `STREAMERXMIXPRESET` nodes.
+    pub fn streamerx_mix_preset_count(&self) -> u8 {
+        self.streamerx_mix_preset.count
+    }
+
+    /// Root-down path to the `n`th `STREAMERXSTREAMMIX` node.
+    pub fn streamerx_stream_mix_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.streamerx_stream_mix.path(n)
+    }
+
+    /// Inverse of [`Self::streamerx_stream_mix_path`].
+    pub fn streamerx_stream_mix_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.streamerx_stream_mix.index_from_path(path)
+    }
+
+    /// Number of discovered `STREAMERXSTREAMMIX` nodes.
+    pub fn streamerx_stream_mix_count(&self) -> u8 {
+        self.streamerx_stream_mix.count
+    }
+
+    /// Root-down path to the `n`th `RCSYNCMIX` node.
+    pub fn rcsync_mix_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.rcsync_mix.path(n)
+    }
+
+    /// Inverse of [`Self::rcsync_mix_path`].
+    pub fn rcsync_mix_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.rcsync_mix.index_from_path(path)
+    }
+
+    /// Number of discovered `RCSYNCMIX` nodes.
+    pub fn rcsync_mix_count(&self) -> u8 {
+        self.rcsync_mix.count
+    }
+
+    /// Root-down path to the `n`th `MIXMINUSES` node.
+    pub fn mix_minuses_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.mix_minuses.path(n)
+    }
+
+    /// Inverse of [`Self::mix_minuses_path`].
+    pub fn mix_minuses_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.mix_minuses.index_from_path(path)
+    }
+
+    /// Number of discovered `MIXMINUSES` nodes.
+    pub fn mix_minuses_count(&self) -> u8 {
+        self.mix_minuses.count
     }
 
     /// Root-down path to the `n`th `HEADPHONE` node (single-level). `n` is the
