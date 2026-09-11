@@ -4,7 +4,7 @@ use std::fmt;
 
 // The nine properties a real Pro II / Duo fullSync carries on the single
 // AUDIO node (confirmed from capture, firmware 1.7.3): global audio-engine
-// state — buffer size, sample rate, input/output channel counts, in/out
+// state: buffer size, sample rate, input/output channel counts, in/out
 // latency, plus the currently-active StreamerX mix preset selector and the
 // two rcSync channel-assignment / swap flags.
 wire_param_enum! {

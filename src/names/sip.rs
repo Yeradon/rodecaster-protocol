@@ -18,7 +18,7 @@ wire_param_enum! {
     /// A SIP calling-level parameter: one of the fourteen flat properties the
     /// device carries on the singleton `SIPCALLING` node. Combines settings
     /// (`HostingEnabled` / `HostingToggleEnabled` / `LicenceMode` /
-    /// `LicenceCheck`), device-managed read-back (`RodeCode` — the invite
+    /// `LicenceCheck`), device-managed read-back (`RodeCode`: the invite
     /// code; rotates on hosting toggle), incoming/outgoing call setup
     /// channels (JSON-ish strings), the pending-slot selector, subscription
     /// remaining-time meters, and the post-call rating write channel.
@@ -41,7 +41,7 @@ wire_param_enum! {
 }
 
 // SIPREGISTRATION node (three properties per registration). Per-instance under
-// SIPCALLING — the Duo has two registration slots preconfigured. `Details`
+// SIPCALLING: the Duo has two registration slots preconfigured. `Details`
 // carries the account registration payload; `IsRegistered` is a device-side
 // read-back that echoes on every registration re-check.
 wire_param_enum! {
@@ -49,7 +49,7 @@ wire_param_enum! {
     /// device carries on each `SIPREGISTRATION` child under `SIPCALLING`.
     /// `Index` selects which registration slot; `Details` is the account
     /// registration payload; `IsRegistered` is the device-side registered
-    /// flag (read-back — echoes whenever the SIP subsystem re-checks
+    /// flag (read-back: echoes whenever the SIP subsystem re-checks
     /// registration, including as a side effect of writes to SIPADVANCED
     /// account fields).
     SipRegistrationParam {
@@ -88,7 +88,7 @@ wire_param_enum! {
     }
 }
 
-// SIPADVANCED node (twenty-five properties). Singleton at root — every one of
+// SIPADVANCED node (twenty-five properties). Singleton at root: every one of
 // these was proven writable + persistent in the 2026-07-01 fuzz session.
 // Notably the device stores arbitrary property names verbatim on this node
 // (no schema enforcement); the typed set here is the observed-25.

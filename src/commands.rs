@@ -23,79 +23,56 @@ use crate::names::{
     StreamerXStreamMixParam, SystemParam, TestParam, ThemeParam, WifiScanResultParam,
 };
 
-/// The single 6-byte trigger payload the device requires on `mixLinkRequest`
-/// (to link) or `mixUnlinkRequest` (to unlink). Captured against a Duo on fw
-/// 1.7.3 over USB HID, 2026-06-30, by isolating each variable from the wider
-/// touchscreen behaviour.
-///
-/// **What the wire actually does:**
-///
-/// - `mixLinkRequest` and `mixUnlinkRequest` are properties whose natural
-///   at-rest type is `Bool(false)`. The device's request handler ignores
-///   `Bool` writes entirely and ignores `Binary` writes whose third byte is
-///   `0x03` (the JUCE `false` marker).
-/// - A `Binary` write whose third byte is `0x02` (the JUCE `true` marker)
-///   is treated as a request submission: the device runs the link state
-///   machine (flips `mixLink`, broadcasting `MixLinkChanged`) and then
-///   writes the property back to a `Binary` value with `byte[2] = 0x03`
-///   as a *device-side* acknowledgment.
-/// - The remaining bytes of the payload are arbitrary; only `byte[2]`
-///   gates the action. The touchscreen happens to fill the rest with
-///   another `01,01,02` triplet (matching this constant byte-for-byte).
-/// - Action direction is signalled entirely by the **property name**, not
-///   the payload bytes.
-///
-/// What looked like a touchscreen "press/release" two-frame pulse was
-/// actually one client-initiated trigger plus one device-initiated ack
-/// written back into the same property. See [`crate::DeviceEvent::MixLinkRequested`]
-/// for the inbound side ([`crate::MixLinkRequestOrigin::ClientTrigger`] vs
-/// [`crate::MixLinkRequestOrigin::DeviceAck`]).
-const MIX_LINK_TRIGGER: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02];
+/// Canonical trigger payload alias for backward compatibility in tests.
+#[cfg(test)]
+const MIX_LINK_TRIGGER: [u8; 6] = crate::trigger::REQUEST_BYTES;
 
-/// CallMe return channels are toggled with a single legacy request blob (the
-/// `(trigger=true, state=true)` form). CallMe sits outside the mix matrix on a
-/// dedicated request path and has NOT been re-captured for the press/release
-/// pulse, so it keeps the original single-frame behavior until validated.
-const CALLME_REQUEST_BLOB: [u8; 6] = [0x01, 0x01, 0x02, 0x01, 0x01, 0x02];
-
-/// JUCE `Int` value used to mean "unassigned" for `channelInputSource`.
-/// The device treats negative source ids as "no source"; on the wire JUCE's
-/// `INT` marker is a fixed 4-byte little-endian `i32`, so `-1` serializes as
-/// `0xFFFF_FFFF` and decodes back to `-1`. The server emits the same bits
-/// (its encoder uses `u32::MAX` which rolls over to the same `i32::-1`).
+/// JUCE `Int` value representing unassigned for `channelInputSource`.
 const CHANNEL_INPUT_SOURCE_UNASSIGNED: i64 = -1;
 
 /// Verbatim wire bytes for the screen-wake message ([`Command::ScreenTouched`]).
 ///
-/// This is NOT a well-formed `propertyChanged` frame and so cannot go through
-/// [`change_frame::encode_property_changed`]: it is the `propertyChanged`
-/// header (`changeType=1`, then `compressedInt(1)` for nLevels, then a path
-/// num-bytes prefix `0x01`) followed *directly* by the property name with no
-/// path value and no var value. The device special-cases it. Decoding it
-/// through the generic codec would swallow the first name byte as the path
-/// value, so it is emitted as a fixed literal. It is layout-independent (a
-/// global "wake the display" request), so there is nothing to discover.
+/// Anatomy: PropertyChanged changeType (0x01), path depth 1 (0x01, 0x01),
+/// child node 1 prefix (0x01), followed by null-terminated "screenTouched\0".
+/// Emitted verbatim by RØDE Central to wake the touchscreen display on node index 1.
 const SCREEN_TOUCHED_FRAME: [u8; 18] = [
-    0x01, // changeType = PROPERTY_CHANGED
-    0x01, 0x01, // compressedInt(1) = nLevels
-    0x01, // path[0] num-bytes prefix (the name bytes follow with no value)
-    b's', b'c', b'r', b'e', b'e', b'n', b'T', b'o', b'u', b'c', b'h', b'e', b'd', 0x00,
+    0x01, 0x01, 0x01, 0x01, b's', b'c', b'r', b'e', b'e', b'n', b'T', b'o', b'u', b'c', b'h', b'e',
+    b'd', 0x00,
 ];
 
-/// Root-child index that owns `powerOffRequest` on RODECaster Pro II firmware
-/// 1.7.3 (empirically captured). Unlike the channel/mix/fader families, this
-/// node is not part of a discoverable run in the fullSync, so it is pinned
-/// here rather than derived from [`Layout`]. Revisit if a newer firmware (or
-/// the Duo) addresses power-off differently.
-const POWER_OFF_NODE_INDEX: u32 = 15;
-
-/// Path offset for a CallMe routing request. CallMe return channels are
-/// addressed *outside* the regular mix matrix (their sources sit past
-/// `Layout::source_count`, so `mix_cell_path` cannot reach them). The device
-/// instead accepts a dedicated single-level request path
-/// `(source_index << 8) | (CALLME_MIX_PATH_OFFSET + mix)` carrying
-/// `mixLinkRequest` / `mixUnlinkRequest`. Confirmed against firmware 1.7.3.
+/// Mix offset index for CallMe return channel routing requests.
+///
+/// Used in `(source << 8) | (CALLME_MIX_PATH_OFFSET + mix)` to address
+/// external SIP/CallMe return channels outside the primary mix matrix.
 const CALLME_MIX_PATH_OFFSET: u32 = 4;
+
+#[inline]
+fn single_prop_frame(path: &[u32], name: &str, value: &Value) -> Vec<Vec<u8>> {
+    vec![change_frame::encode_property_changed(path, name, value)]
+}
+
+#[inline]
+fn trigger_frame(path: &[u32], name: &str) -> Vec<Vec<u8>> {
+    single_prop_frame(path, name, &crate::trigger::request_value())
+}
+
+macro_rules! encode_singleton {
+    ($layout:expr, $getter:ident, $what:literal, $param:expr, $val:expr) => {{
+        let path = $layout
+            .$getter()
+            .ok_or(EncodeError::MissingNode { what: $what })?;
+        Ok(single_prop_frame(&path, $param.as_str(), $val))
+    }};
+}
+
+macro_rules! encode_indexed {
+    ($layout:expr, $getter:ident, $idx:expr, $what:literal, $param:expr, $val:expr) => {{
+        let path = $layout
+            .$getter($idx)
+            .ok_or(EncodeError::MissingNode { what: $what })?;
+        Ok(single_prop_frame(&path, $param.as_str(), $val))
+    }};
+}
 
 /// Outgoing Rodecaster command.
 ///
@@ -157,199 +134,81 @@ pub enum Command {
     LinkCallMe { source: Source, mix: MixOutput },
     /// Unlink a CallMe return channel from a mix. See [`Command::LinkCallMe`].
     UnlinkCallMe { source: Source, mix: MixOutput },
-    /// Set any channel-strip DSP parameter (EQ, compressor, de-esser, noise
-    /// gate, HPF, aphex, pan, tone, preamp) on a fader's CHANNEL node.
-    ///
-    /// This is the encode-side mirror of
-    /// [`crate::DeviceEvent::ChannelParamChanged`]. The crate owns only the
-    /// part it has verified on hardware: the CHANNEL *path* (resolved through
-    /// [`Layout`]) and the property *name* (a firmware ground-truth string via
-    /// [`ChannelParam`]). The `value` is **caller-supplied and its semantics
-    /// are not all capture-verified** (range, scale, units differ per
-    /// parameter), so the wire `Value` type and contents are the caller's
-    /// responsibility. The JUCE wire is self-describing, so whatever `Value`
-    /// you pass round-trips byte-faithfully; getting the device to *act* on it
-    /// correctly is what needs a capture per parameter.
+    /// Set a channel-strip DSP parameter on a fader's CHANNEL node.
     SetChannelParam {
         fader: Fader,
         param: ChannelParam,
         value: Value,
     },
-    /// Set any input-source parameter (preamp gain, 48V power, mic type, phase,
-    /// colour, wireless serial, SIP/RCV routing) on a source's INPUTSOURCE node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::InputSourceParamChanged`].
-    /// Unlike [`Command::SetChannelParam`] this addresses the *source* directly
-    /// (an `INPUTSOURCE` node, indexed by [`Source`]), independent of any fader
-    /// assignment. The crate owns the INPUTSOURCE path (via [`Layout`]) and the
-    /// property name (via [`InputSourceParam`]); the `value` is caller-supplied
-    /// and rides byte-faithfully on the self-describing JUCE wire (per-parameter
-    /// range/scale semantics are the caller's responsibility, as with
-    /// [`Command::SetChannelParam`]).
+    /// Set an input-source parameter on a source's INPUTSOURCE node.
     SetInputSourceParam {
         source: Source,
         param: InputSourceParam,
         value: Value,
     },
-    /// Set a master-bus parameter (the master Compellor compressor or the master
-    /// delay) on the single `MASTERCHANNEL` node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::MasterParamChanged`].
-    /// There is exactly one master bus, so this carries no addressing key. The
-    /// crate owns the path (via [`Layout`]) and the property name (via
-    /// [`MasterParam`]); the `value` is caller-supplied and rides byte-faithfully
-    /// on the self-describing JUCE wire (per-parameter range/scale semantics are
-    /// the caller's responsibility, as with [`Command::SetChannelParam`]).
+    /// Set a master-bus parameter on the MASTERCHANNEL node.
     SetMasterParam { param: MasterParam, value: Value },
-    /// Set an output-bus parameter (monitor/Bluetooth levels and mutes, the
-    /// multi-out mode, or the recording-bus flags) on the single `OUTPUT` node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::OutputParamChanged`].
-    /// There is exactly one output bus, so this carries no addressing key. Path
-    /// and property name are crate-owned (via [`Layout`] and [`OutputParam`]);
-    /// the `value` is caller-supplied and rides byte-faithfully on the wire.
+    /// Set an output-bus parameter on the OUTPUT node.
     SetOutputParam { param: OutputParam, value: Value },
-    /// Set the auto-duck depth on the single `DUCKER` node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::DuckerParamChanged`].
-    /// Key-less: one ducker. Path and property name are crate-owned (via
-    /// [`Layout`] and [`DuckerParam`]); the `value` rides byte-faithfully.
+    /// Set the auto-duck depth on the DUCKER node.
     SetDuckerParam { param: DuckerParam, value: Value },
-    /// Set a recorder transport property on the single `RECORDER` node. The
-    /// `request*` params are the actual command channel: set
-    /// [`RecorderParam::RequestRecordState`] to start/stop recording, or
-    /// [`RecorderParam::RequestDropMarker`] to drop a chapter marker.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::RecorderParamChanged`].
-    /// Key-less: one recorder. Path and property name are crate-owned (via
-    /// [`Layout`] and [`RecorderParam`]); the `value` rides byte-faithfully.
+    /// Set a recorder transport property on the RECORDER node.
     SetRecorderParam { param: RecorderParam, value: Value },
-    /// Set a long-form player property (transport, loaded file, or envelope) on
-    /// the single `PLAYER` node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::PlayerParamChanged`].
-    /// Key-less: one player. Path and property name are crate-owned (via
-    /// [`Layout`] and [`PlayerParam`]); the `value` rides byte-faithfully.
+    /// Set a player property on the PLAYER node.
     SetPlayerParam { param: PlayerParam, value: Value },
-    /// Set a per-headphone property (`headphoneColour` / `headphoneType`) on one
-    /// `HEADPHONE` node, addressed by jack index.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::HeadphoneParamChanged`].
-    /// Path (from the `headphone` index via [`Layout`]) and property name (via
-    /// [`HeadphoneParam`]) are crate-owned; the `value` rides byte-faithfully.
+    /// Set a headphone property on a HEADPHONE node.
     SetHeadphoneParam {
         headphone: u8,
         param: HeadphoneParam,
         value: Value,
     },
-    /// Set a per-slot effects parameter (reverb, echo/delay, pitch shift,
-    /// distortion, robot or voice-disguise control) on one root
-    /// `EFFECTS_PARAMETERS` node, addressed by slot index.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::EffectsParamChanged`].
-    /// Path (from the `effects` slot index via [`Layout`]) and property name (via
-    /// [`EffectsParam`]) are crate-owned; the `value` rides byte-faithfully on the
-    /// self-describing JUCE wire (per-parameter range/scale semantics are the
-    /// caller's responsibility, as with [`Command::SetChannelParam`]).
+    /// Set an effects parameter on an EFFECTS_PARAMETERS node.
     SetEffectsParam {
         effects: u8,
         param: EffectsParam,
         value: Value,
     },
-    /// Set a front-panel UI parameter (display / button brightness, selected pad
-    /// bank, metering mode, touchscreen EQ-band focus, ...) on the single root
-    /// `GUI` node. Key-less: there is exactly one GUI node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::GuiParamChanged`]. Path
-    /// (the single `GUI` node via [`Layout`]) and property name (via [`GuiParam`])
-    /// are crate-owned; the `value` rides byte-faithfully on the self-describing
-    /// JUCE wire. This is ordinary UI state and is unrelated to
-    /// [`Command::ScreenTouched`], which is a separate wake-the-display pulse.
+    /// Set a front-panel UI parameter on the GUI node.
     SetGuiParam { param: GuiParam, value: Value },
-    /// Set a sound-pad parameter (colour / name / type / loaded sample /
-    /// transport / gain / envelope / mixer routing / effect / SIP / MIDI-trigger
-    /// control) on one `PAD` node inside the `SOUNDPADS` container, addressed by
-    /// pad index.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::PadParamChanged`]. Path
-    /// (from the `pad` index via [`Layout`]) and property name (via [`PadParam`])
-    /// are crate-owned; the `value` rides byte-faithfully on the self-describing
-    /// JUCE wire. `Err(EncodeError::OutOfRange)` if the pad index is past the
-    /// discovered run.
+    /// Set a sound-pad parameter on a PAD node.
     SetPadParam {
         pad: u8,
         param: PadParam,
         value: Value,
     },
-    /// Set a device-wide system parameter (identity, the firmware-update +
-    /// download command channel, date/time + personalization settings, the
-    /// global output disables, or USB / storage / sharing status) on the single
-    /// root `SYSTEM` node. Key-less: there is exactly one SYSTEM node.
-    ///
-    /// The encode-side mirror of [`crate::DeviceEvent::SystemParamChanged`]. Path
-    /// (the single `SYSTEM` node via [`Layout`]) and property name (via
-    /// [`SystemParam`]) are crate-owned; the `value` rides byte-faithfully on the
-    /// self-describing JUCE wire (per-parameter range/scale semantics are the
-    /// caller's responsibility, as with [`Command::SetChannelParam`]).
-    ///
-    /// Setting [`SystemParam::PowerOffRequest`] here addresses the *discovered*
-    /// `SYSTEM` node, unlike the dedicated [`Command::PowerOff`] frame which is
-    /// pinned to a fixed node index. On firmware 1.7.3 the discovered `SYSTEM`
-    /// node is that same index, so the two are equivalent there; prefer
-    /// [`Command::PowerOff`] for the plain "turn off" intent.
+    /// Set a device-wide system parameter on the SYSTEM node.
     SetSystemParam { param: SystemParam, value: Value },
-    /// Set a SIP calling-level parameter on the singleton `SIPCALLING` node.
-    /// Empirically verified writable on Duo fw 1.7.3 (2026-07-01): toggling
-    /// `SipCallingParam::HostingEnabled` rotates `sipRodeCode` and re-registers.
+    /// Set a SIP calling parameter on the SIPCALLING node.
     SetSipCallingParam {
         param: SipCallingParam,
         value: Value,
     },
-    /// Set a per-registration SIP parameter on one of the SIPREGISTRATION
-    /// child nodes under SIPCALLING. `registration` selects the slot
-    /// (0..sip_registration_count).
+    /// Set a per-registration SIP parameter on a SIPREGISTRATION node.
     SetSipRegistrationParam {
         registration: u8,
         param: SipRegistrationParam,
         value: Value,
     },
-    /// Set a per-call-slot SIP parameter on one of the SIPCALLSLOTS nodes.
-    /// `slot` selects the slot (0..sip_call_slots_count). Statistics fields
-    /// are device-managed and writes may be ignored; the crate accepts the
-    /// write regardless.
+    /// Set a per-call-slot SIP parameter on a SIPCALLSLOTS node.
     SetSipCallSlotsParam {
         slot: u8,
         param: SipCallSlotsParam,
         value: Value,
     },
-    /// Set a SIP advanced-settings parameter on the singleton `SIPADVANCED`
-    /// node. Empirically verified: all 25 typed properties in this family
-    /// are writable + persistent on Duo fw 1.7.3. Writes to
-    /// registration-relevant fields (account credentials, NAT, domain)
-    /// trigger a device-side registration re-check echo.
+    /// Set a SIP advanced parameter on the SIPADVANCED node.
     SetSipAdvancedParam {
         param: SipAdvancedParam,
         value: Value,
     },
-    /// Set a diagnostic parameter on the singleton `TEST` node. Writing
-    /// `TestParam::AllLedsWhite = Bool(true)` lights every front-panel LED
-    /// (factory-test hook); `ToneGeneration = Int(N)` selects an internal
-    /// test-tone source for audio-path verification.
+    /// Set a diagnostic parameter on the TEST node.
     SetTestParam { param: TestParam, value: Value },
-    /// Set a per-pad-recorder parameter on one of the `PADRECORDER` nodes.
-    /// `pad_recorder` is the discovered ordinal (see
-    /// [`Layout::pad_recorder_count`]). `StateRequest` is the write-side
-    /// command channel to start / stop recording; `Clear` erases the pad's
-    /// current recording.
+    /// Set a pad recorder parameter on a PADRECORDER node.
     SetPadRecorderParam {
         pad_recorder: u8,
         param: PadRecorderParam,
         value: Value,
     },
-    /// Set a per-preset effects parameter on one of the `FXPRESET` child
-    /// nodes under `FXPRESETS`. `preset` is the discovered ordinal
-    /// (see [`Layout::fx_preset_count`]). `Contents` is a serialized preset
-    /// blob; `Idx` addresses the preset slot the contents apply to.
+    /// Set an effects preset parameter on an FXPRESET node.
     SetFxPresetParam {
         preset: u8,
         param: FxPresetParam,
@@ -528,50 +387,40 @@ impl Command {
                     change_frame::encode_property_changed(
                         &path,
                         "mixLinkRequest",
-                        &Value::Binary(MIX_LINK_TRIGGER.to_vec()),
+                        &crate::trigger::request_value(),
                     ),
                 ])
             }
             Command::UnlinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
-                // Single Binary trigger to mixUnlinkRequest is sufficient.
-                // No enable/unmute precondition; the cell's other gates retain
-                // whatever value they had.
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    "mixUnlinkRequest",
-                    &Value::Binary(MIX_LINK_TRIGGER.to_vec()),
-                )])
+                Ok(trigger_frame(&path, "mixUnlinkRequest"))
             }
             Command::ScreenTouched => Ok(vec![SCREEN_TOUCHED_FRAME.to_vec()]),
-            Command::PowerOff => Ok(vec![change_frame::encode_property_changed(
-                &[POWER_OFF_NODE_INDEX],
-                "powerOffRequest",
-                &Value::Bool(true),
-            )]),
-            Command::LinkCallMe { source, mix } => Ok(vec![change_frame::encode_property_changed(
+            Command::PowerOff => {
+                let path = layout
+                    .system_path()
+                    .ok_or(EncodeError::MissingNode { what: "SYSTEM" })?;
+                Ok(single_prop_frame(
+                    &path,
+                    "powerOffRequest",
+                    &Value::Bool(true),
+                ))
+            }
+            Command::LinkCallMe { source, mix } => Ok(trigger_frame(
                 &callme_request_path(*source, *mix),
                 "mixLinkRequest",
-                &Value::Binary(CALLME_REQUEST_BLOB.to_vec()),
-            )]),
-            Command::UnlinkCallMe { source, mix } => {
-                Ok(vec![change_frame::encode_property_changed(
-                    &callme_request_path(*source, *mix),
-                    "mixUnlinkRequest",
-                    &Value::Binary(CALLME_REQUEST_BLOB.to_vec()),
-                )])
-            }
+            )),
+            Command::UnlinkCallMe { source, mix } => Ok(trigger_frame(
+                &callme_request_path(*source, *mix),
+                "mixUnlinkRequest",
+            )),
             Command::SetChannelParam {
                 fader,
                 param,
                 value,
             } => {
                 let path = channel_path(layout, fader_index(layout, *fader)?)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                Ok(single_prop_frame(&path, param.as_str(), value))
             }
             Command::SetInputSourceParam {
                 source,
@@ -579,63 +428,22 @@ impl Command {
                 value,
             } => {
                 let path = input_source_path(layout, *source)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                Ok(single_prop_frame(&path, param.as_str(), value))
             }
             Command::SetMasterParam { param, value } => {
-                let path = layout
-                    .master_channel_path()
-                    .ok_or(EncodeError::MissingNode {
-                        what: "MASTERCHANNEL",
-                    })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, master_channel_path, "MASTERCHANNEL", param, value)
             }
             Command::SetOutputParam { param, value } => {
-                let path = layout
-                    .output_path()
-                    .ok_or(EncodeError::MissingNode { what: "OUTPUT" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, output_path, "OUTPUT", param, value)
             }
             Command::SetDuckerParam { param, value } => {
-                let path = layout
-                    .ducker_path()
-                    .ok_or(EncodeError::MissingNode { what: "DUCKER" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, ducker_path, "DUCKER", param, value)
             }
             Command::SetRecorderParam { param, value } => {
-                let path = layout
-                    .recorder_path()
-                    .ok_or(EncodeError::MissingNode { what: "RECORDER" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, recorder_path, "RECORDER", param, value)
             }
             Command::SetPlayerParam { param, value } => {
-                let path = layout
-                    .player_path()
-                    .ok_or(EncodeError::MissingNode { what: "PLAYER" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, player_path, "PLAYER", param, value)
             }
             Command::SetHeadphoneParam {
                 headphone,
@@ -643,11 +451,7 @@ impl Command {
                 value,
             } => {
                 let path = headphone_path(layout, *headphone)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                Ok(single_prop_frame(&path, param.as_str(), value))
             }
             Command::SetEffectsParam {
                 effects,
@@ -655,348 +459,190 @@ impl Command {
                 value,
             } => {
                 let path = effects_path(layout, *effects)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                Ok(single_prop_frame(&path, param.as_str(), value))
             }
             Command::SetGuiParam { param, value } => {
-                let path = layout
-                    .gui_path()
-                    .ok_or(EncodeError::MissingNode { what: "GUI" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, gui_path, "GUI", param, value)
             }
             Command::SetPadParam { pad, param, value } => {
                 let path = pad_path(layout, *pad)?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                Ok(single_prop_frame(&path, param.as_str(), value))
             }
             Command::SetSystemParam { param, value } => {
-                let path = layout
-                    .system_path()
-                    .ok_or(EncodeError::MissingNode { what: "SYSTEM" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, system_path, "SYSTEM", param, value)
             }
             Command::SetSipCallingParam { param, value } => {
-                let path = layout
-                    .sip_calling_path()
-                    .ok_or(EncodeError::MissingNode { what: "SIPCALLING" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, sip_calling_path, "SIPCALLING", param, value)
             }
             Command::SetSipAdvancedParam { param, value } => {
-                let path = layout.sip_advanced_path().ok_or(EncodeError::MissingNode {
-                    what: "SIPADVANCED",
-                })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, sip_advanced_path, "SIPADVANCED", param, value)
             }
             Command::SetSipRegistrationParam {
                 registration,
                 param,
                 value,
             } => {
-                let path = layout.sip_registration_path(*registration).ok_or(
-                    EncodeError::MissingNode {
-                        what: "SIPREGISTRATION",
-                    },
-                )?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    sip_registration_path,
+                    *registration,
+                    "SIPREGISTRATION",
+                    param,
+                    value
+                )
             }
             Command::SetSipCallSlotsParam { slot, param, value } => {
-                let path = layout
-                    .sip_call_slots_path(*slot)
-                    .ok_or(EncodeError::MissingNode {
-                        what: "SIPCALLSLOTS",
-                    })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    sip_call_slots_path,
+                    *slot,
+                    "SIPCALLSLOTS",
+                    param,
+                    value
+                )
             }
             Command::SetTestParam { param, value } => {
-                let path = layout
-                    .test_path()
-                    .ok_or(EncodeError::MissingNode { what: "TEST" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, test_path, "TEST", param, value)
             }
             Command::SetPadRecorderParam {
                 pad_recorder,
                 param,
                 value,
             } => {
-                let path =
-                    layout
-                        .pad_recorder_path(*pad_recorder)
-                        .ok_or(EncodeError::MissingNode {
-                            what: "PADRECORDER",
-                        })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    pad_recorder_path,
+                    *pad_recorder,
+                    "PADRECORDER",
+                    param,
+                    value
+                )
             }
             Command::SetFxPresetParam {
                 preset,
                 param,
                 value,
             } => {
-                let path = layout
-                    .fx_preset_path(*preset)
-                    .ok_or(EncodeError::MissingNode { what: "FXPRESET" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(layout, fx_preset_path, *preset, "FXPRESET", param, value)
             }
             Command::SetNetworkParam { param, value } => {
-                let path = layout
-                    .network_path()
-                    .ok_or(EncodeError::MissingNode { what: "NETWORK" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, network_path, "NETWORK", param, value)
             }
             Command::SetAudioParam { param, value } => {
-                let path = layout
-                    .audio_path()
-                    .ok_or(EncodeError::MissingNode { what: "AUDIO" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, audio_path, "AUDIO", param, value)
             }
             Command::SetBuildParam { param, value } => {
-                let path = layout
-                    .build_path()
-                    .ok_or(EncodeError::MissingNode { what: "BUILD" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, build_path, "BUILD", param, value)
             }
             Command::SetAppParam { param, value } => {
-                let path = layout
-                    .app_path()
-                    .ok_or(EncodeError::MissingNode { what: "APP" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, app_path, "APP", param, value)
             }
             Command::SetThemeParam { param, value } => {
-                let path = layout
-                    .theme_path()
-                    .ok_or(EncodeError::MissingNode { what: "THEME" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, theme_path, "THEME", param, value)
             }
             Command::SetCurrentShowParam { param, value } => {
-                let path = layout.current_show_path().ok_or(EncodeError::MissingNode {
-                    what: "CURRENTSHOW",
-                })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, current_show_path, "CURRENTSHOW", param, value)
             }
             Command::SetShowControlParam { param, value } => {
-                let path = layout.show_control_path().ok_or(EncodeError::MissingNode {
-                    what: "SHOWCONTROL",
-                })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, show_control_path, "SHOWCONTROL", param, value)
             }
             Command::SetRecordingsParam { param, value } => {
-                let path = layout
-                    .recordings_path()
-                    .ok_or(EncodeError::MissingNode { what: "RECORDINGS" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, recordings_path, "RECORDINGS", param, value)
             }
             Command::SetRadioParam { param, value } => {
-                let path = layout
-                    .radio_path()
-                    .ok_or(EncodeError::MissingNode { what: "RADIO" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_singleton!(layout, radio_path, "RADIO", param, value)
             }
             Command::SetShowParam { show, param, value } => {
-                let path = layout
-                    .show_path(*show)
-                    .ok_or(EncodeError::MissingNode { what: "SHOW" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(layout, show_path, *show, "SHOW", param, value)
             }
             Command::SetRecordingParam {
                 recording,
                 param,
                 value,
             } => {
-                let path = layout
-                    .recording_path(*recording)
-                    .ok_or(EncodeError::MissingNode { what: "RECORDING" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    recording_path,
+                    *recording,
+                    "RECORDING",
+                    param,
+                    value
+                )
             }
             Command::SetStorageVolumeParam {
                 volume,
                 param,
                 value,
             } => {
-                let path = layout
-                    .storage_volume_path(*volume)
-                    .ok_or(EncodeError::MissingNode {
-                        what: "STORAGEVOLUME",
-                    })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    storage_volume_path,
+                    *volume,
+                    "STORAGEVOLUME",
+                    param,
+                    value
+                )
             }
             Command::SetRadioTxParam { tx, param, value } => {
-                let path = layout
-                    .radio_tx_path(*tx)
-                    .ok_or(EncodeError::MissingNode { what: "RADIOTX" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(layout, radio_tx_path, *tx, "RADIOTX", param, value)
             }
             Command::SetRadioRxParam { rx, param, value } => {
-                let path = layout
-                    .radio_rx_path(*rx)
-                    .ok_or(EncodeError::MissingNode { what: "RADIORX" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(layout, radio_rx_path, *rx, "RADIORX", param, value)
             }
             Command::SetWifiScanResultParam { slot, param, value } => {
-                let path = layout
-                    .wifi_scan_result_path(*slot)
-                    .ok_or(EncodeError::MissingNode {
-                        what: "WIFISCANRESULT",
-                    })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    wifi_scan_result_path,
+                    *slot,
+                    "WIFISCANRESULT",
+                    param,
+                    value
+                )
             }
             Command::SetStreamerXMixPresetParam {
                 preset,
                 param,
                 value,
             } => {
-                let path =
-                    layout
-                        .streamerx_mix_preset_path(*preset)
-                        .ok_or(EncodeError::MissingNode {
-                            what: "STREAMERXMIXPRESET",
-                        })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    streamerx_mix_preset_path,
+                    *preset,
+                    "STREAMERXMIXPRESET",
+                    param,
+                    value
+                )
             }
             Command::SetStreamerXStreamMixParam {
                 stream,
                 param,
                 value,
             } => {
-                let path =
-                    layout
-                        .streamerx_stream_mix_path(*stream)
-                        .ok_or(EncodeError::MissingNode {
-                            what: "STREAMERXSTREAMMIX",
-                        })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    streamerx_stream_mix_path,
+                    *stream,
+                    "STREAMERXSTREAMMIX",
+                    param,
+                    value
+                )
             }
             Command::SetRcSyncMixParam { mix, param, value } => {
-                let path = layout
-                    .rcsync_mix_path(*mix)
-                    .ok_or(EncodeError::MissingNode { what: "RCSYNCMIX" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(layout, rcsync_mix_path, *mix, "RCSYNCMIX", param, value)
             }
             Command::SetMixMinusesParam {
                 minuses,
                 param,
                 value,
             } => {
-                let path = layout
-                    .mix_minuses_path(*minuses)
-                    .ok_or(EncodeError::MissingNode { what: "MIXMINUSES" })?;
-                Ok(vec![change_frame::encode_property_changed(
-                    &path,
-                    param.as_str(),
-                    value,
-                )])
+                encode_indexed!(
+                    layout,
+                    mix_minuses_path,
+                    *minuses,
+                    "MIXMINUSES",
+                    param,
+                    value
+                )
             }
             Command::SetupSkip { language, timezone } => {
                 let mut frames = Vec::new();

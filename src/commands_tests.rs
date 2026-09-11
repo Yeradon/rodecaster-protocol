@@ -1,72 +1,13 @@
 use super::*;
 use crate::change_frame::{decode, ChangeFrame};
+use crate::test_fixtures::{layout, minimal_layout};
 use crate::valuetree::Node;
 
-/// Build a small synthetic fullSync tree (PHYSICALINTERFACE at an unusual
-/// position to prove no hardcoded constants).
-fn synthetic_root() -> Node {
-    fn n(name: &str) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children: vec![],
-        }
+fn decode_single_prop(bytes: &[u8]) -> (Vec<u32>, String, Value) {
+    match decode(bytes).expect("decodes") {
+        ChangeFrame::PropertyChanged { path, name, value } => (path, name, value),
+        other => panic!("expected PropertyChanged, got {other:?}"),
     }
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-    let phys = nc(
-        "PHYSICALINTERFACE",
-        vec![n("HEADER"), n("FADER"), n("FADER"), n("FADER")],
-    );
-    let mut children = vec![
-        n("OTHER"),
-        phys, // physical_interface_idx = 1
-        n("CHANNEL"),
-        n("CHANNEL"),
-        n("CHANNEL"),
-    ];
-    for _ in 0..26 {
-        children.push(n("MIX"));
-    }
-    // 19 INPUTSOURCE nodes (the addressable source run), appended after MIX
-    // so existing position assertions are unaffected.
-    for _ in 0..19 {
-        children.push(n("INPUTSOURCE"));
-    }
-    // Singleton families (one each), after the INPUTSOURCE run.
-    children.push(n("MASTERCHANNEL"));
-    children.push(n("OUTPUT"));
-    children.push(n("DUCKER"));
-    children.push(n("RECORDER"));
-    children.push(n("PLAYER"));
-    // HEADPHONE is multi-instance; two at the tail (run length 2).
-    children.push(n("HEADPHONE"));
-    children.push(n("HEADPHONE"));
-    // EFFECTS_PARAMETERS is multi-instance; three at the tail (run length 3).
-    children.push(n("EFFECTS_PARAMETERS"));
-    children.push(n("EFFECTS_PARAMETERS"));
-    children.push(n("EFFECTS_PARAMETERS"));
-    // GUI is the single front-panel UI-state node (singleton) at the tail.
-    children.push(n("GUI"));
-    // SOUNDPADS container with a run of 3 PAD nodes (a non-PAD child first so
-    // first_pad is not zero).
-    children.push(nc(
-        "SOUNDPADS",
-        vec![n("PADHEADER"), n("PAD"), n("PAD"), n("PAD")],
-    ));
-    // SYSTEM is the single device-wide state node (singleton) at the tail. It
-    // carries no boardType/systemName here, so model detection stays Pro II.
-    children.push(n("SYSTEM"));
-    nc("DEVICE", children)
-}
-
-fn layout() -> Layout {
-    Layout::from_full_sync(&synthetic_root()).unwrap()
 }
 
 #[test]
@@ -81,16 +22,10 @@ fn set_fader_mute_encodes_juce_property_changed() {
     .unwrap();
     assert_eq!(bytes.len(), 1);
 
-    // Decode through the JUCE change-frame codec and check addressing.
-    let frame = decode(&bytes[0]).expect("decodes");
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.channel_path(1).unwrap());
-            assert_eq!(name, "channelOutputMute");
-            assert_eq!(value, Value::Bool(true));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.channel_path(1).unwrap());
+    assert_eq!(name, "channelOutputMute");
+    assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
@@ -102,16 +37,10 @@ fn set_fader_level_uses_two_level_path_through_physical_interface() {
     }
     .encode(&l)
     .unwrap();
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            // Physical3 -> index 2; [physical_interface_idx=1, first_fader_in_phys=1 + 2 = 3]
-            assert_eq!(path, vec![1, 3]);
-            assert_eq!(name, "faderLevel");
-            assert_eq!(value, Value::Int(75));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, vec![1, 3]);
+    assert_eq!(name, "faderLevel");
+    assert_eq!(value, Value::Int(75));
 }
 
 #[test]
@@ -544,15 +473,10 @@ fn set_headphone_param_addresses_indexed_path() {
     .encode(&l)
     .unwrap();
     assert_eq!(bytes.len(), 1);
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.headphone_path(1).unwrap());
-            assert_eq!(name, "headphoneType");
-            assert_eq!(value, Value::Int(2));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.headphone_path(1).unwrap());
+    assert_eq!(name, "headphoneType");
+    assert_eq!(value, Value::Int(2));
 }
 
 #[test]
@@ -588,15 +512,10 @@ fn set_effects_param_addresses_indexed_path() {
     .encode(&l)
     .unwrap();
     assert_eq!(bytes.len(), 1);
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.effects_path(2).unwrap());
-            assert_eq!(name, "reverbMix");
-            assert_eq!(value, Value::Double(0.4));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.effects_path(2).unwrap());
+    assert_eq!(name, "reverbMix");
+    assert_eq!(value, Value::Double(0.4));
 }
 
 #[test]
@@ -631,15 +550,10 @@ fn set_gui_param_addresses_gui_path() {
     .encode(&l)
     .unwrap();
     assert_eq!(bytes.len(), 1);
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.gui_path().unwrap());
-            assert_eq!(name, "screenBrightness");
-            assert_eq!(value, Value::Int(250));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.gui_path().unwrap());
+    assert_eq!(name, "screenBrightness");
+    assert_eq!(value, Value::Int(250));
 }
 
 #[test]
@@ -651,15 +565,10 @@ fn set_gui_param_other_emits_raw_name() {
     }
     .encode(&l)
     .unwrap();
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.gui_path().unwrap());
-            assert_eq!(name, "mysteryGuiFlag");
-            assert_eq!(value, Value::Bool(true));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.gui_path().unwrap());
+    assert_eq!(name, "mysteryGuiFlag");
+    assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
@@ -673,16 +582,11 @@ fn set_system_param_addresses_system_path() {
     .encode(&l)
     .unwrap();
     assert_eq!(bytes.len(), 1);
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.system_path().unwrap());
-            // The variant's wire name keeps the firmware's USB casing verbatim.
-            assert_eq!(name, "updateViaUSB");
-            assert_eq!(value, Value::Bool(true));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.system_path().unwrap());
+    // The variant's wire name keeps the firmware's USB casing verbatim.
+    assert_eq!(name, "updateViaUSB");
+    assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
@@ -694,15 +598,10 @@ fn set_system_param_other_emits_raw_name() {
     }
     .encode(&l)
     .unwrap();
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.system_path().unwrap());
-            assert_eq!(name, "mysterySystemFlag");
-            assert_eq!(value, Value::Int(7));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.system_path().unwrap());
+    assert_eq!(name, "mysterySystemFlag");
+    assert_eq!(value, Value::Int(7));
 }
 
 #[test]
@@ -717,15 +616,10 @@ fn set_pad_param_addresses_indexed_path() {
     .encode(&l)
     .unwrap();
     assert_eq!(bytes.len(), 1);
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.pad_path(2).unwrap());
-            assert_eq!(name, "padColourIndex");
-            assert_eq!(value, Value::Int(7));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.pad_path(2).unwrap());
+    assert_eq!(name, "padColourIndex");
+    assert_eq!(value, Value::Int(7));
 }
 
 #[test]
@@ -759,37 +653,15 @@ fn set_pad_param_other_emits_raw_name() {
     }
     .encode(&l)
     .unwrap();
-    let frame = decode(&bytes[0]).unwrap();
-    match frame {
-        ChangeFrame::PropertyChanged { path, name, value } => {
-            assert_eq!(path, l.pad_path(0).unwrap());
-            assert_eq!(name, "padMysteryFlag");
-            assert_eq!(value, Value::Bool(true));
-        }
-        _ => panic!("wrong variant"),
-    }
+    let (path, name, value) = decode_single_prop(&bytes[0]);
+    assert_eq!(path, l.pad_path(0).unwrap());
+    assert_eq!(name, "padMysteryFlag");
+    assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
 fn set_gui_param_absent_node_returns_missing_node_error() {
-    // A layout from a tree with no GUI node: encoding must error with the
-    // family-specific MissingNode, never panic or misroute.
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-    fn n(name: &str) -> Node {
-        nc(name, vec![])
-    }
-    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
-    let mut children = vec![phys, n("CHANNEL")];
-    for _ in 0..13 {
-        children.push(n("MIX"));
-    }
-    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+    let l = minimal_layout();
 
     assert_eq!(
         Command::SetGuiParam {
@@ -804,24 +676,7 @@ fn set_gui_param_absent_node_returns_missing_node_error() {
 
 #[test]
 fn set_system_param_absent_node_returns_missing_node_error() {
-    // A layout from a tree with no SYSTEM node: encoding must error with the
-    // family-specific MissingNode, never panic or misroute.
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-    fn n(name: &str) -> Node {
-        nc(name, vec![])
-    }
-    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
-    let mut children = vec![phys, n("CHANNEL")];
-    for _ in 0..13 {
-        children.push(n("MIX"));
-    }
-    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+    let l = minimal_layout();
 
     assert_eq!(
         Command::SetSystemParam {
@@ -836,24 +691,7 @@ fn set_system_param_absent_node_returns_missing_node_error() {
 
 #[test]
 fn set_ducker_recorder_player_absent_node_return_missing_node_error() {
-    // A layout from a tree with none of the new singletons: encoding must
-    // error with the family-specific MissingNode, never panic or misroute.
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-    fn n(name: &str) -> Node {
-        nc(name, vec![])
-    }
-    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
-    let mut children = vec![phys, n("CHANNEL")];
-    for _ in 0..13 {
-        children.push(n("MIX"));
-    }
-    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+    let l = minimal_layout();
 
     assert_eq!(
         Command::SetDuckerParam {
@@ -1047,10 +885,12 @@ fn screen_touched_golden_bytes() {
 
 #[test]
 fn power_off_golden_bytes() {
-    let bytes = Command::PowerOff.encode(&layout()).unwrap();
+    let l = layout();
+    let sys_idx = l.system_path().unwrap()[0] as u8;
+    let bytes = Command::PowerOff.encode(&l).unwrap();
     assert_eq!(bytes.len(), 1);
-    // propertyChanged, path=[15], "powerOffRequest", var Bool(true).
-    let mut expected = vec![0x01, 0x01, 0x01, 0x01, 0x0f];
+    // propertyChanged, path=[system_path], "powerOffRequest", var Bool(true).
+    let mut expected = vec![0x01, 0x01, 0x01, 0x01, sys_idx];
     expected.extend_from_slice(b"powerOffRequest\0");
     expected.extend_from_slice(&[0x01, 0x01, 0x02]); // var Bool(true)
     assert_eq!(bytes[0], expected);

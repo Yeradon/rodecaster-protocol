@@ -5,7 +5,7 @@
 //! family (`mixDisabled`, `mixLevelWithAnchor`, `mixLink`, `mixLinkRequest`,
 //! `mixMute`, `mixUnlinkRequest`); one is unique to rcSync
 //! (`mixRcSyncLevelRequest`). Decoding distinguishes RCSYNCMIX from the
-//! regular MIX matrix by path shape — regular MIX cells fall inside the
+//! regular MIX matrix by path shape: regular MIX cells fall inside the
 //! discovered `first_mix + source * MIX_COUNT_PER_SOURCE + mix` run, while
 //! RCSYNCMIX sits elsewhere.
 

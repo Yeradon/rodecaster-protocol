@@ -3,7 +3,7 @@
 //!
 //! Both `MIXMINUSES` and `RCSYNCMIXMINUES` nodes carry the SAME single
 //! property (`outputMixMinus`). Consumers who need to distinguish between the
-//! two node types must inspect the path — this family types the property name
+//! two node types must inspect the path: this family types the property name
 //! only. The firmware misspells `RCSYNCMIXMINUES` (should be `MINUSES`);
 //! preserved verbatim in the node-name check.
 

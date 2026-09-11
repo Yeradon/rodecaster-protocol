@@ -8,7 +8,7 @@ use std::fmt;
 wire_param_enum! {
     /// A device-wide UI theme parameter: the one flat property the device
     /// carries on the singleton `THEME` node. Selects the current
-    /// touchscreen theme (dark / light / etc — enum values are
+    /// touchscreen theme (dark / light / etc: enum values are
     /// firmware-internal).
     ThemeParam {
     Id => "themeId",

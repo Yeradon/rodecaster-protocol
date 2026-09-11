@@ -11,7 +11,7 @@ wire_param_enum! {
     /// properties the device carries on the singleton `BUILD` node.
     /// Read-back only (the fields are set by the firmware image itself;
     /// writes are ignored). Includes the CallMe version, and GUI + mixer
-    /// module version strings and git shas — useful for capture-fidelity
+    /// module version strings and git shas: useful for capture-fidelity
     /// tooling that needs to record the exact firmware build state.
     BuildParam {
     CallMeVersion => "buildCallMeVersion",

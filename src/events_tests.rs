@@ -1,77 +1,6 @@
 use super::*;
 use crate::change_frame::encode_property_changed;
-use crate::valuetree::{Node, Property};
-
-fn n(name: &str) -> Node {
-    Node {
-        name: name.to_string(),
-        properties: vec![],
-        children: vec![],
-    }
-}
-fn np(name: &str, properties: Vec<Property>) -> Node {
-    Node {
-        name: name.to_string(),
-        properties,
-        children: vec![],
-    }
-}
-fn nc(name: &str, children: Vec<Node>) -> Node {
-    Node {
-        name: name.to_string(),
-        properties: vec![],
-        children,
-    }
-}
-fn prop(name: &str, value: Value) -> Property {
-    Property {
-        name: name.to_string(),
-        value,
-    }
-}
-
-fn synthetic_root() -> Node {
-    let phys = nc(
-        "PHYSICALINTERFACE",
-        vec![n("HEADER"), n("FADER"), n("FADER"), n("FADER")],
-    );
-    let mut children = vec![n("OTHER"), phys, n("CHANNEL"), n("CHANNEL"), n("CHANNEL")];
-    for _ in 0..26 {
-        children.push(n("MIX"));
-    }
-    // 19 INPUTSOURCE nodes (addressable source run), after MIX.
-    for _ in 0..19 {
-        children.push(n("INPUTSOURCE"));
-    }
-    // Singleton families (one each), after the INPUTSOURCE run.
-    children.push(n("MASTERCHANNEL"));
-    children.push(n("OUTPUT"));
-    children.push(n("DUCKER"));
-    children.push(n("RECORDER"));
-    children.push(n("PLAYER"));
-    // HEADPHONE is multi-instance; two at the tail (run length 2).
-    children.push(n("HEADPHONE"));
-    children.push(n("HEADPHONE"));
-    // EFFECTS_PARAMETERS is multi-instance; three at the tail (run length 3).
-    children.push(n("EFFECTS_PARAMETERS"));
-    children.push(n("EFFECTS_PARAMETERS"));
-    children.push(n("EFFECTS_PARAMETERS"));
-    // GUI is the single front-panel UI-state node (singleton) at the tail.
-    children.push(n("GUI"));
-    // SOUNDPADS container with a run of 3 PAD nodes (a non-PAD child first so
-    // first_pad is not zero, mirroring the real tree).
-    children.push(nc(
-        "SOUNDPADS",
-        vec![n("PADHEADER"), n("PAD"), n("PAD"), n("PAD")],
-    ));
-    // SYSTEM is the single device-wide state node (singleton) at the tail.
-    children.push(n("SYSTEM"));
-    nc("DEVICE", children)
-}
-
-fn layout() -> Layout {
-    Layout::from_full_sync(&synthetic_root()).unwrap()
-}
+use crate::test_fixtures::{layout, n, nc, np, prop};
 
 #[test]
 fn decodes_fader_mute_changed() {
@@ -321,7 +250,7 @@ fn unknown_property_preserves_wire_data() {
     // A non-addressable path (the root's OTHER child at index 0, before
     // first_channel): no node family claims it, so it must fall to Unknown
     // with its wire data intact. (A property on a CHANNEL path would instead
-    // be promoted to ChannelParamChanged — see `decodes_channel_strip_param`.)
+    // be promoted to ChannelParamChanged: see `decodes_channel_strip_param`.)
     let path = vec![0u32];
     let payload = encode_property_changed(&path, "futureProperty", &Value::Int(42));
     let event = decode_event(&payload, &l).unwrap();

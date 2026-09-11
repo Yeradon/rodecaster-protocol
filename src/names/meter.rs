@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn meter_param_shares_fader_level_wire_name() {
-        // `faderLevel` intentionally collides with FADER's property — path
+        // `faderLevel` intentionally collides with FADER's property: path
         // shape distinguishes the two at decode time.
         assert_eq!(MeterParam::FaderLevel.as_str(), "faderLevel");
     }

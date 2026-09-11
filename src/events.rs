@@ -1,25 +1,8 @@
 //! Typed Rodecaster device events.
 //!
-//! `DeviceEvent` is the inbound vocabulary the consumer receives from the
-//! device. [`decode_event`] turns one wire payload into one typed event,
-//! routing through [`crate::change_frame`] and resolving paths through a
-//! [`crate::Layout`] discovered from the device's fullSync.
-//!
-//! ## Asymmetric echo addressing
-//!
-//! Two echoes the device emits are addressed differently from their write
-//! paths, empirically derived on firmware 1.7.3:
-//!
-//! - `channelInputSource` ([`DeviceEvent::FaderAssignmentChanged`]): written at
-//!   stride 1 from `first_channel`, but echoed back at **stride 6**
-//!   (`0x1C`=fader0, `0x22`=fader1, ...). `decode_property` resolves the echo
-//!   with that stride.
-//! - `encoderSignal` ([`DeviceEvent::FaderTouched`]) and `encoderColour`
-//!   ([`DeviceEvent::FaderEncoderColourChanged`]): single-level paths whose
-//!   value is the raw fader index (no base offset).
-//!
-//! Both formulas reproduce the behaviour the reference server ran in
-//! production; a future capture on newer firmware may refine them.
+//! `DeviceEvent` is the inbound vocabulary received from the device.
+//! [`decode_event`] decodes a wire payload into a typed event using
+//! a [`crate::Layout`] discovered from the device's fullSync.
 
 use crate::change_frame::{decode as decode_frame, ChangeFrame};
 use crate::juce_var::Value;
@@ -40,553 +23,290 @@ use crate::valuetree::Node;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum DeviceEvent {
-    /// A fullSync arrived. The contained events are the initial state, in
-    /// the order the consumer should apply them to its domain model.
-    /// Equivalent to calling [`extract_initial_state`] on the parsed root.
+    /// Full device state received during initialization or sync.
     InitialState(Vec<DeviceEvent>),
 
-    FaderMuteChanged {
-        fader: Fader,
-        muted: bool,
-    },
-    FaderCueChanged {
-        fader: Fader,
-        enabled: bool,
-    },
-    /// Fader level (0..127 MIDI scale).
-    ///
-    /// **fw 1.7.3 reachability (Duo, 2026-06-30):** at runtime this event only
-    /// fires for `Fader::Virtual*` strips. Pushing a `Fader::Physical*` strip
-    /// emits no `faderLevel` property change on the JUCE wire; the hardware
-    /// fader's live position only flows over MIDI CC#15 on UART3 to
-    /// `rc_audio_mixer`, which echoes its effect downstream as a
-    /// `mixLevelWithAnchor` sweep across the source's matrix column (each
-    /// cell's `value` field carries the live fader position). Physical fader
-    /// positions DO surface here once at initial state via
-    /// [`extract_initial_state`] (the fullSync seeds them from
-    /// `PHYSICALINTERFACE > FADER.faderLevel`), but the runtime change path is
-    /// unreachable for physical strips on this firmware.
-    FaderLevelChanged {
-        fader: Fader,
-        level: u8,
-    },
-    /// A fader strip was touched (the device's `encoderSignal`). The wire
-    /// addresses it by raw fader index (single-level path, no base offset).
-    ///
-    /// **fw 1.7.3 reachability (Duo, 2026-06-30):** observed for `Virtual*`
-    /// strips driven from the touchscreen. Pushing a `Physical*` strip emits
-    /// only a `mixLevelWithAnchor` sweep on its source's matrix column and no
-    /// `encoderSignal`; the hardware touch sensor's events appear to stay on
-    /// UART3 to `rc_audio_mixer` rather than crossing the JUCE wire.
-    FaderTouched {
-        fader: Fader,
-    },
-    /// The LED-ring colour index of a fader strip's rotary encoder changed
-    /// (the device's `encoderColour`). Same single-level addressing as
-    /// `encoderSignal`: the path is the raw fader index. `colour` is `None`
-    /// when the wire value is `-1` (cleared), otherwise the palette index the
-    /// device emitted.
-    ///
-    /// Captured 2026-06-30 from a real Duo capture; palette index semantics
-    /// (what each value paints) are not modeled here, only round-tripped.
-    FaderEncoderColourChanged {
-        fader: Fader,
-        colour: Option<i32>,
-    },
-    /// A `mixLinkRequest` or `mixUnlinkRequest` property carrying a `Binary`
-    /// payload was observed at a mix cell's single-level path. Captured
-    /// 2026-06-30 against a Duo on fw 1.7.3.
-    ///
-    /// `direction` (Link vs Unlink) comes from the property name. `origin`
-    /// (ClientTrigger vs DeviceAck) comes from the third byte of the payload
-    /// (`0x02` = client-initiated trigger, `0x03` = device-emitted
-    /// acknowledgment). The earlier "press / release" interpretation was
-    /// modeling them as symmetric phases of a single gesture, but probes
-    /// showed the two have asymmetric origins: only client triggers cause
-    /// state changes; the ack is the device writing the property back into
-    /// the same Binary slot after running the link state machine.
-    ///
-    /// State change confirmation comes via [`DeviceEvent::MixLinkChanged`];
-    /// this event is the protocol-level trace of the request submission and
-    /// acknowledgment, useful for replay-fidelity tooling and capture
-    /// diffing. The remaining payload bytes are arbitrary — only the third
-    /// byte gates the device's behaviour.
+    /// Fader mute state changed.
+    FaderMuteChanged { fader: Fader, muted: bool },
+    /// Fader cue/solo state changed.
+    FaderCueChanged { fader: Fader, enabled: bool },
+    /// Fader level changed (0..127 MIDI scale).
+    FaderLevelChanged { fader: Fader, level: u8 },
+    /// A fader strip was touched.
+    FaderTouched { fader: Fader },
+    /// Rotary encoder LED-ring colour palette index changed (`None` when cleared).
+    FaderEncoderColourChanged { fader: Fader, colour: Option<i32> },
+    /// Mix link or unlink request or acknowledgment trace.
     MixLinkRequested {
         source: Source,
         mix: MixOutput,
         direction: MixLinkDirection,
         origin: MixLinkRequestOrigin,
     },
-    /// A fader's input-source assignment changed (`channelInputSource` echo,
-    /// resolved at the stride-6 echo addressing — see module docs). `source`
-    /// is `None` when the slot was unassigned (wire value < 0).
+    /// A fader's input-source assignment changed (`None` when unassigned).
     FaderAssignmentChanged {
         fader: Fader,
         source: Option<Source>,
     },
 
-    /// A channel-strip parameter changed: the EQ, compressor, de-esser, noise
-    /// gate, HPF, aphex, pan, tone or preamp controls for one fader. These all
-    /// live as flat properties on the device's `CHANNEL` node, so they resolve
-    /// to a [`Fader`] through the same path as mute/cue.
-    ///
-    /// `param` is the typed property identity ([`ChannelParam`], a ground-truth
-    /// wire name); `value` is the self-describing wire value (its type comes
-    /// from the JUCE marker, not from a guess). A property not yet given a typed
-    /// identifier arrives as [`ChannelParam::Other`] rather than collapsing into
-    /// [`DeviceEvent::Unknown`], so the whole strip is addressable today and new
-    /// firmware properties still surface with their fader resolved.
+    /// A channel-strip parameter changed (EQ, dynamics, HPF, pan, tone, preamp).
     ChannelParamChanged {
         fader: Fader,
         param: ChannelParam,
         value: Value,
     },
 
-    /// An input-source parameter changed: the preamp gain, 48V power, mic type,
-    /// phase, colour, wireless serial or SIP/RCV routing for one source. These
-    /// live on the device's `INPUTSOURCE` node (one per [`Source`]), addressed
-    /// independently of any fader assignment, so this resolves to a [`Source`],
-    /// not a [`Fader`].
-    ///
-    /// `param` is the typed property identity ([`InputSourceParam`]); `value` is
-    /// the self-describing wire value. An un-typed property arrives as
-    /// [`InputSourceParam::Other`] rather than collapsing into
-    /// [`DeviceEvent::Unknown`].
+    /// An input-source parameter changed (preamp gain, phantom power, mic type).
     InputSourceParamChanged {
         source: Source,
         param: InputSourceParam,
         value: Value,
     },
 
-    /// A master-bus parameter changed: the master Compellor (compressor) or the
-    /// master delay, on the single `MASTERCHANNEL` node. There is exactly one
-    /// master bus, so this carries no addressing key. `param` is the typed
-    /// property identity ([`MasterParam`]); `value` is the self-describing wire
-    /// value. An un-typed property arrives as [`MasterParam::Other`] rather than
-    /// collapsing into [`DeviceEvent::Unknown`].
-    MasterParamChanged {
-        param: MasterParam,
-        value: Value,
-    },
+    /// A master-bus parameter changed (Compellor compressor, master delay).
+    MasterParamChanged { param: MasterParam, value: Value },
 
-    /// An output-bus parameter changed: a monitor/Bluetooth level or mute, the
-    /// multi-out mode, or a recording-bus flag, on the single `OUTPUT` node.
-    /// Key-less for the same reason as [`DeviceEvent::MasterParamChanged`].
-    /// `param` is the typed property identity ([`OutputParam`]); an un-typed
-    /// property arrives as [`OutputParam::Other`].
-    OutputParamChanged {
-        param: OutputParam,
-        value: Value,
-    },
+    /// An output-bus parameter changed (monitor/Bluetooth level, mute, multi-out).
+    OutputParamChanged { param: OutputParam, value: Value },
 
-    /// The auto-duck depth changed, on the single `DUCKER` node. Key-less:
-    /// there is exactly one ducker. `param` is the typed property identity
-    /// ([`DuckerParam`]); an un-typed property arrives as [`DuckerParam::Other`].
-    DuckerParamChanged {
-        param: DuckerParam,
-        value: Value,
-    },
+    /// Auto-ducking parameters changed.
+    DuckerParamChanged { param: DuckerParam, value: Value },
 
-    /// A recorder transport property changed, on the single `RECORDER` node:
-    /// either read-back state (current state, elapsed ms, byte rate) or the
-    /// request* command channel echoing back. Key-less: one recorder. `param`
-    /// is the typed property identity ([`RecorderParam`]); an un-typed property
-    /// arrives as [`RecorderParam::Other`].
-    RecorderParamChanged {
-        param: RecorderParam,
-        value: Value,
-    },
+    /// Recorder transport state or property changed.
+    RecorderParamChanged { param: RecorderParam, value: Value },
 
-    /// A long-form player property changed, on the single `PLAYER` node:
-    /// transport (state, speed, progress), the loaded file, or the in/out +
-    /// fade envelope. Key-less: one player. `param` is the typed property
-    /// identity ([`PlayerParam`]); an un-typed property arrives as
-    /// [`PlayerParam::Other`].
-    PlayerParamChanged {
-        param: PlayerParam,
-        value: Value,
-    },
+    /// Sound player property changed (playback state, file, fade envelope).
+    PlayerParamChanged { param: PlayerParam, value: Value },
 
-    /// A per-headphone property changed (`headphoneColour` / `headphoneType`),
-    /// on one `HEADPHONE` node. The device has one node per physical headphone
-    /// jack, so this carries the `headphone` index. `param` is the typed
-    /// property identity ([`HeadphoneParam`]); an un-typed property arrives as
-    /// [`HeadphoneParam::Other`].
+    /// Per-headphone parameter changed (colour, output type).
     HeadphoneParamChanged {
         headphone: u8,
         param: HeadphoneParam,
         value: Value,
     },
 
-    /// A per-slot effects parameter changed (reverb, echo/delay, pitch shift,
-    /// distortion, robot or voice-disguise control), on one root
-    /// `EFFECTS_PARAMETERS` node. The device exposes a contiguous run of these,
-    /// one per channel-strip effects slot, so this carries the `effects` slot
-    /// index. `param` is the typed property identity ([`EffectsParam`]); an
-    /// un-typed property arrives as [`EffectsParam::Other`]. (The pad/sample
-    /// effects nested under `PADEFFECTS` are a separate addressing context, not
-    /// resolved here.)
+    /// Per-slot channel effects parameter changed (reverb, delay, pitch, distortion).
     EffectsParamChanged {
         effects: u8,
         param: EffectsParam,
         value: Value,
     },
 
-    /// A front-panel UI parameter changed (display / button brightness, selected
-    /// pad bank, metering mode, touchscreen EQ-band focus, ...), on the single
-    /// root `GUI` node. Key-less: there is exactly one GUI node. `param` is the
-    /// typed property identity ([`GuiParam`]); an un-typed property arrives as
-    /// [`GuiParam::Other`]. This is UI state, distinct from the
-    /// [`crate::Command::ScreenTouched`] wake-the-display pulse.
-    GuiParamChanged {
-        param: GuiParam,
-        value: Value,
-    },
+    /// Front-panel UI parameter changed (display/button brightness, pad bank).
+    GuiParamChanged { param: GuiParam, value: Value },
 
-    /// A sound-pad parameter changed (colour / name / type / loaded sample /
-    /// transport / gain / envelope / mixer routing / effect / SIP / MIDI-trigger
-    /// control), on one `PAD` node inside the `SOUNDPADS` container. The device
-    /// exposes a contiguous run of these (one per pad), so this carries the `pad`
-    /// index. `param` is the typed property identity ([`PadParam`]); an un-typed
-    /// property arrives as [`PadParam::Other`]. (The pad recorder, pad effects and
-    /// FX presets live in separate sibling nodes, not resolved here.)
+    /// Sound-pad parameter changed (colour, sample, playback mode, routing).
     PadParamChanged {
         pad: u8,
         param: PadParam,
         value: Value,
     },
 
-    /// A device-wide system parameter changed (identity, the firmware-update +
-    /// download lifecycle, date/time + personalization settings, the global
-    /// output disables, or USB / storage / sharing status), on the single root
-    /// `SYSTEM` node. Key-less: there is exactly one SYSTEM node. `param` is the
-    /// typed property identity ([`SystemParam`]); an un-typed property arrives as
-    /// [`SystemParam::Other`]. The `powerOffRequest` readback surfaces here as
-    /// [`SystemParam::PowerOffRequest`], distinct from the dedicated
-    /// [`crate::Command::PowerOff`] write frame.
-    SystemParamChanged {
-        param: SystemParam,
-        value: Value,
-    },
+    /// Device-wide system parameter changed (power, clock, USB/storage status).
+    SystemParamChanged { param: SystemParam, value: Value },
 
-    /// `mixLevelWithAnchor` carries two fields, `anchor|value`. `anchor` is the
-    /// configured per-route matrix level; `value` is the live fader-tracked
-    /// level (equal to `anchor` when the wire sends a single number).
+    /// Routing matrix level changed (`anchor` is matrix level, `value` is live fader-tracked level).
     MixLevelChanged {
         source: Source,
         mix: MixOutput,
         anchor: f32,
         value: f32,
     },
+    /// Routing matrix mute state changed.
     MixMuteChanged {
         source: Source,
         mix: MixOutput,
         muted: bool,
     },
+    /// Routing matrix link state changed.
     MixLinkChanged {
         source: Source,
         mix: MixOutput,
         linked: bool,
     },
+    /// Routing matrix route disabled state changed.
     MixDisabledChanged {
         source: Source,
         mix: MixOutput,
         disabled: bool,
     },
 
-    /// A device-wide networking parameter changed (WiFi, Bluetooth, wired IP,
-    /// cellular, DNS) on the singleton `NETWORK` node. Un-typed properties
-    /// arrive as [`NetworkParam::Other`] rather than falling through to
-    /// [`DeviceEvent::Unknown`]. Note that WiFi PSK and MAC-address strings
-    /// pass through byte-faithfully; consumers should treat them as sensitive.
-    NetworkParamChanged {
-        param: NetworkParam,
-        value: Value,
-    },
+    /// Device-wide networking parameter changed (WiFi, Bluetooth, IP, DNS).
+    NetworkParamChanged { param: NetworkParam, value: Value },
 
-    /// A recordings-container parameter changed (`recordingTotalCount` /
-    /// `recordingTotalDuration` / `requestDeleteUID`) on the singleton
-    /// `RECORDINGS` node. This is the container's summary state; individual
-    /// recording metadata surfaces as [`DeviceEvent::RecordingParamChanged`].
+    /// Recordings summary parameter changed (total count, total duration).
     RecordingsParamChanged {
         param: RecordingsParam,
         value: Value,
     },
 
-    /// A per-recording parameter changed on one of the `RECORDING` child nodes
-    /// under the `RECORDINGS` container. `recording` is the child index within
-    /// the container (0..count); combined with the fullSync's recording list
-    /// order, it identifies which recording. `Content` values are pipe-separated
-    /// metadata strings (`name|hash|path|timestampMs|durationSec|flags...`);
-    /// parsing the fields is the caller's responsibility.
+    /// Specific recording metadata changed.
     RecordingParamChanged {
         recording: u8,
         param: RecordingParam,
         value: Value,
     },
 
-    /// A per-volume storage parameter changed on one of the `STORAGEVOLUME`
-    /// child nodes. `volume` is the child index (0 = the SD card slot on the
-    /// devices we've captured; additional volumes appear if USB / other
-    /// storage is attached). `State` values are pipe-separated live progress
-    /// strings (`totalBytes|usedBytes|f|f|f`); parsing is the caller's job.
+    /// Storage volume parameter changed (total bytes, used bytes).
     StorageVolumeParamChanged {
         volume: u8,
         param: StorageVolumeParam,
         value: Value,
     },
 
-    /// A `POT` child of `PHYSICALINTERFACE` reported a new rotary encoder
-    /// position. `pot` is the raw child index within `PHYSICALINTERFACE`
-    /// (which pot that resolves to depends on the device model; the Duo has
-    /// two pots). `level` is the wire value clamped to 0..=127 (MIDI-scale).
-    PotLevelChanged {
-        pot: u8,
-        level: u8,
-    },
+    /// Rotary encoder or potentiometer position changed (0..=127).
+    PotLevelChanged { pot: u8, level: u8 },
 
-    /// A `PADBUTTON` child of `PHYSICALINTERFACE` reported a press or release
-    /// on one of the front-panel pad buttons. `button` is the raw child index
-    /// within `PHYSICALINTERFACE`; per-device mapping to the physical button
-    /// row is the caller's job (the Duo emits indices 35..40 for six pad
-    /// buttons on fw 1.7.3).
-    PadButtonPressed {
-        button: u8,
-        pressed: bool,
-    },
+    /// Front-panel pad button press or release.
+    PadButtonPressed { button: u8, pressed: bool },
 
-    /// A `SOLOMUTEBUTTON` child of `PHYSICALINTERFACE` reported a press or
-    /// release on one of the front-panel mute buttons. `button` is the raw
-    /// child index within `PHYSICALINTERFACE`.
-    MutePressed {
-        button: u8,
-        pressed: bool,
-    },
+    /// Front-panel mute button press or release.
+    MutePressed { button: u8, pressed: bool },
 
-    /// A device-wide audio-engine parameter changed on the singleton `AUDIO`
-    /// node (buffer / sample rate / channel counts / latencies / rcSync /
-    /// StreamerX preset). Un-typed properties arrive as [`AudioParam::Other`].
-    AudioParamChanged {
-        param: AudioParam,
-        value: Value,
-    },
+    /// Device-wide audio-engine parameter changed (sample rate, buffer size, latencies).
+    AudioParamChanged { param: AudioParam, value: Value },
 
-    /// A firmware-build metadata field changed on the singleton `BUILD` node.
-    /// Read-back only in normal operation; writes are firmware-side.
-    BuildParamChanged {
-        param: BuildParam,
-        value: Value,
-    },
+    /// Firmware build metadata changed.
+    BuildParamChanged { param: BuildParam, value: Value },
 
-    /// A companion-app-mode flag changed on the singleton `APP` node
-    /// (compression, monitor mix, output device, recording).
-    AppParamChanged {
-        param: AppParam,
-        value: Value,
-    },
+    /// Companion-app state flag changed.
+    AppParamChanged { param: AppParam, value: Value },
 
-    /// The device-wide UI theme changed on the singleton `THEME` node.
-    ThemeParamChanged {
-        param: ThemeParam,
-        value: Value,
-    },
+    /// UI theme setting changed.
+    ThemeParamChanged { param: ThemeParam, value: Value },
 
-    /// The identity of the currently-loaded show changed on the singleton
-    /// `CURRENTSHOW` node. See [`DeviceEvent::ShowParamChanged`] for per-show
-    /// metadata under the `SHOWS` container.
+    /// Currently-loaded show identifier changed.
     CurrentShowParamChanged {
         param: CurrentShowParam,
         value: Value,
     },
 
-    /// A per-show metadata field changed on one of the `SHOW` child nodes
-    /// under the `SHOWS` container. `show` is the child index within the
-    /// container (0..count).
+    /// Show metadata changed.
     ShowParamChanged {
         show: u8,
         param: ShowParam,
         value: Value,
     },
 
-    /// A show-lifecycle command or progress field changed on the singleton
-    /// `SHOWCONTROL` node (delete / export / import / new-from-default,
-    /// plus progress + last error).
+    /// Show control or lifecycle action changed.
     ShowControlParamChanged {
         param: ShowControlParam,
         value: Value,
     },
 
-    /// A live meter reading changed on one of the `METER` nodes (typically
-    /// one per fader strip). `meter` is the raw meter index within the tree
-    /// structure that owns the METER nodes.
+    /// Live level meter reading changed.
     MeterParamChanged {
         meter: u8,
         param: MeterParam,
         value: Value,
     },
 
-    /// An `ENCODER` child of `PHYSICALINTERFACE` reported a press / release
-    /// on the rotary encoder button. `encoder` is the raw child index.
-    EncoderPressed {
-        encoder: u8,
-        pressed: bool,
-    },
+    /// Rotary encoder push-button press or release.
+    EncoderPressed { encoder: u8, pressed: bool },
 
-    /// A `SOLOMUTEBUTTON` child of `PHYSICALINTERFACE` reported a solo press
-    /// or release. Companion to [`DeviceEvent::MutePressed`] (same node type,
-    /// different property).
-    SoloPressed {
-        button: u8,
-        pressed: bool,
-    },
+    /// Front-panel solo/listen button press or release.
+    SoloPressed { button: u8, pressed: bool },
 
-    /// The `RECBUTTON` child of `PHYSICALINTERFACE` reported a press or
-    /// release on the device's REC button.
-    RecButtonPressed {
-        pressed: bool,
-    },
+    /// Front-panel record button press or release.
+    RecButtonPressed { pressed: bool },
 
-    /// The singleton `EMERGENCYMUTE` node's `emergencyMuteActive` flag flipped.
-    EmergencyMuteChanged {
-        active: bool,
-    },
+    /// Emergency mute state changed.
+    EmergencyMuteChanged { active: bool },
 
-    /// A SIP calling-level parameter changed on the singleton `SIPCALLING`
-    /// node. Covers hosting flags, invite code, call-setup channels,
-    /// subscription meters, post-call rating.
+    /// SIP calling state parameter changed.
     SipCallingParamChanged {
         param: SipCallingParam,
         value: Value,
     },
 
-    /// A per-registration SIP parameter changed on one of the
-    /// `SIPREGISTRATION` child nodes under `SIPCALLING`. `registration` is
-    /// the child ordinal (Duo carries two slots).
+    /// SIP account registration parameter changed.
     SipRegistrationParamChanged {
         registration: u8,
         param: SipRegistrationParam,
         value: Value,
     },
 
-    /// A per-call-slot SIP parameter changed on one of the `SIPCALLSLOTS`
-    /// nodes. `slot` is the ordinal within the discovered run (Duo carries
-    /// three slots). Statistics fields (Quality / Jitter / Bitrate /
-    /// PacketLoss) are device-managed read-back.
+    /// SIP call slot parameter changed.
     SipCallSlotsParamChanged {
         slot: u8,
         param: SipCallSlotsParam,
         value: Value,
     },
 
-    /// A SIP advanced-settings parameter changed on the singleton
-    /// `SIPADVANCED` node. Every property in this family is writable +
-    /// persistent on Duo fw 1.7.3; writes to registration-relevant fields
-    /// trigger a `SipRegistrationParamChanged { IsRegistered }` echo as the
-    /// device re-checks its registration state.
+    /// SIP advanced setting changed.
     SipAdvancedParamChanged {
         param: SipAdvancedParam,
         value: Value,
     },
 
-    /// A per-preset StreamerX mix-preset parameter changed. `preset` is the
-    /// discovered ordinal of the `STREAMERXMIXPRESET` node.
+    /// Streamer X mix preset parameter changed.
     StreamerXMixPresetParamChanged {
         preset: u8,
         param: StreamerXMixPresetParam,
         value: Value,
     },
 
-    /// A per-stream StreamerX mix-level parameter changed. `stream` is the
-    /// discovered ordinal of the `STREAMERXSTREAMMIX` node.
+    /// Streamer X stream mix parameter changed.
     StreamerXStreamMixParamChanged {
         stream: u8,
         param: StreamerXStreamMixParam,
         value: Value,
     },
 
-    /// A per-preset effects parameter changed on one of the `FXPRESET`
-    /// nodes. `preset` is the discovered ordinal.
+    /// Effects preset parameter changed.
     FxPresetParamChanged {
         preset: u8,
         param: FxPresetParam,
         value: Value,
     },
 
-    /// A per-pad-recorder parameter changed on one of the `PADRECORDER`
-    /// nodes. `pad_recorder` is the discovered ordinal.
+    /// Pad recorder parameter changed.
     PadRecorderParamChanged {
         pad_recorder: u8,
         param: PadRecorderParam,
         value: Value,
     },
 
-    /// A device-diagnostic parameter changed on the singleton `TEST` node
-    /// (factory-test LED all-white toggle, internal tone generator).
-    TestParamChanged {
-        param: TestParam,
-        value: Value,
-    },
+    /// Diagnostic or factory-test parameter changed.
+    TestParamChanged { param: TestParam, value: Value },
 
-    /// A per-scan-result WiFi SSID appeared on one of the `WIFISCANRESULT`
-    /// nodes. `slot` is the discovered ordinal (the device populates a
-    /// contiguous run as scans complete).
+    /// WiFi scan result entry changed.
     WifiScanResultChanged {
         slot: u8,
         param: WifiScanResultParam,
         value: Value,
     },
 
-    /// A wireless-radio pairing-lifecycle parameter changed on the singleton
-    /// `RADIO` node.
-    RadioParamChanged {
-        param: RadioParam,
-        value: Value,
-    },
+    /// Wireless receiver lifecycle parameter changed.
+    RadioParamChanged { param: RadioParam, value: Value },
 
-    /// A per-transmitter wireless-radio parameter changed on one of the
-    /// `RADIOTX` nodes. `tx` is the discovered ordinal.
+    /// Wireless transmitter parameter changed.
     RadioTxParamChanged {
         tx: u8,
         param: RadioTxParam,
         value: Value,
     },
 
-    /// A per-receiver wireless-radio parameter changed on one of the
-    /// `RADIORX` nodes. `rx` is the discovered ordinal.
+    /// Wireless receiver parameter changed.
     RadioRxParamChanged {
         rx: u8,
         param: RadioRxParam,
         value: Value,
     },
 
-    /// A mix-minus routing parameter changed on either a `MIXMINUSES` or
-    /// `RCSYNCMIXMINUES` node. The two node types share the same wire
-    /// property name (`outputMixMinus`); consumers who need to distinguish
-    /// must inspect the path context.
+    /// Mix-minus routing parameter changed.
     MixMinusesParamChanged {
         param: MixMinusesParam,
         value: Value,
     },
 
-    /// A per-rcSync-mix parameter changed on one of the `RCSYNCMIX` nodes.
-    /// Six of the seven property names are shared with the regular MIX
-    /// cell family; path shape distinguishes them at decode time (regular
-    /// MIX cells fall inside the discovered mix run, RCSYNCMIX sits
-    /// outside).
-    RcSyncMixParamChanged {
-        param: RcSyncMixParam,
-        value: Value,
-    },
+    /// rcSync mix routing parameter changed.
+    RcSyncMixParamChanged { param: RcSyncMixParam, value: Value },
 
-    /// Tree topology changed (`childAdded` / `childRemoved` / `childMoved`).
-    /// The current [`Layout`] is potentially stale; expect or request a fresh
-    /// fullSync and rebuild Layout before trusting subsequent address lookups.
+    /// Tree topology changed (child added, removed, or moved); layout should be rebuilt.
     LayoutInvalidated,
 
-    /// Property name/path didn't match any known Rodecaster event under the
-    /// current [`Layout`]. The wire data is preserved so consumers can log
-    /// it, react, or pattern-match on raw paths without losing data. Future
-    /// firmware additions surface here rather than vanishing.
+    /// Unrecognized property name or path under the current layout.
     Unknown {
         prop_name: String,
         path: Vec<u32>,
@@ -594,32 +314,17 @@ pub enum DeviceEvent {
     },
 }
 
-/// Direction of a mix-cell link request echo (see
-/// [`DeviceEvent::MixLinkRequested`]).
+/// Direction of a mix-cell link request echo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixLinkDirection {
-    /// The device echoed a `mixLinkRequest` property (link action).
+    /// Link action (`mixLinkRequest`).
     Link,
-    /// The device echoed a `mixUnlinkRequest` property (unlink action).
+    /// Unlink action (`mixUnlinkRequest`).
     Unlink,
 }
 
-/// Origin of a mix-cell link request observation (see
-/// [`DeviceEvent::MixLinkRequested`]). Distinguishes the client-initiated
-/// trigger from the device's own acknowledgment write, identified by the
-/// third byte of the `Binary` payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MixLinkRequestOrigin {
-    /// `byte[2] = 0x02`. A client wrote the trigger; the device runs the
-    /// link state machine in response. This is what [`crate::Command::LinkMix`]
-    /// and [`crate::Command::UnlinkMix`] emit.
-    ClientTrigger,
-    /// `byte[2] = 0x03`. The device wrote the property back to itself as an
-    /// acknowledgment after running the link state machine. Not a frame any
-    /// client should emit; the device ignores `Binary` writes with this
-    /// pattern.
-    DeviceAck,
-}
+/// Origin of a mix-cell link request observation (alias for [`crate::trigger::TriggerOrigin`]).
+pub type MixLinkRequestOrigin = crate::trigger::TriggerOrigin;
 
 /// Decode one wire payload (the change-frame, not including transport frame)
 /// into a typed event. Returns `None` if the payload isn't a recognized JUCE
@@ -735,11 +440,9 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
                 }
             }
             // mixLinkRequest / mixUnlinkRequest at a cell's single-level path.
-            // Direction = property name; origin = byte[2] of the 6-byte Binary
-            // payload (0x02 = client trigger, 0x03 = device ack). See
-            // `DeviceEvent::MixLinkRequested` and the doc on `Command::LinkMix`.
+            // Direction = property name; origin = momentary trigger state.
             "mixLinkRequest" | "mixUnlinkRequest" => {
-                if let Some(origin) = value.as_ref().and_then(mix_link_request_origin) {
+                if let Some(origin) = value.as_ref().and_then(crate::trigger::decode_origin) {
                     let direction = if name == "mixLinkRequest" {
                         MixLinkDirection::Link
                     } else {
@@ -922,7 +625,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     }
 
     // AUDIO singleton (path.len() == 1). Property names are all `audio*`,
-    // `activeStreamerX*`, `rcSync*` — unique to this node.
+    // `activeStreamerX*`, `rcSync*`: unique to this node.
     if path.len() == 1 && AudioParam::from_name(name).is_known() {
         if let Some(value) = value {
             return DeviceEvent::AudioParamChanged {
@@ -932,7 +635,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    // BUILD singleton — property names all start with `build*`.
+    // BUILD singleton: property names all start with `build*`.
     if path.len() == 1 && BuildParam::from_name(name).is_known() {
         if let Some(value) = value {
             return DeviceEvent::BuildParamChanged {
@@ -942,7 +645,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    // APP singleton — property names all start with `app*`.
+    // APP singleton: property names all start with `app*`.
     if path.len() == 1 && AppParam::from_name(name).is_known() {
         if let Some(value) = value {
             return DeviceEvent::AppParamChanged {
@@ -952,7 +655,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    // THEME singleton — one property `themeId`.
+    // THEME singleton: one property `themeId`.
     if path.len() == 1 && ThemeParam::from_name(name).is_known() {
         if let Some(value) = value {
             return DeviceEvent::ThemeParamChanged {
@@ -962,7 +665,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    // CURRENTSHOW singleton — property names all start with `currentShow*`.
+    // CURRENTSHOW singleton: property names all start with `currentShow*`.
     if path.len() == 1 && CurrentShowParam::from_name(name).is_known() {
         if let Some(value) = value {
             return DeviceEvent::CurrentShowParamChanged {
@@ -972,7 +675,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
         }
     }
 
-    // SHOWCONTROL singleton — property names all start with `showControl*`.
+    // SHOWCONTROL singleton: property names all start with `showControl*`.
     if path.len() == 1 && ShowControlParam::from_name(name).is_known() {
         if let Some(value) = value {
             return DeviceEvent::ShowControlParamChanged {
@@ -1062,7 +765,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     // Small-family decodes for property names that don't conflict with any
     // typed family above. Each name is unique to its family, so we key by
     // name; per-instance families take path.last() as the ordinal (no
-    // layout resolution — the path itself carries enough context).
+    // layout resolution: the path itself carries enough context).
 
     if StreamerXMixPresetParam::from_name(name).is_known() {
         if let Some(value) = value {
@@ -1346,23 +1049,6 @@ fn parse_mix_level(s: &str) -> Option<(f32, f32)> {
     let anchor = s.split('|').next()?.parse().ok()?;
     let value = s.split('|').next_back()?.parse().ok()?;
     Some((anchor, value))
-}
-
-/// Read the origin out of a `mixLinkRequest` / `mixUnlinkRequest` payload.
-/// The 6-byte blob's third byte is a JUCE bool marker — `0x02` (true) means
-/// a client wrote the trigger, `0x03` (false) means the device wrote back
-/// its acknowledgment. Anything else (or non-Binary) returns `None` and the
-/// event falls through to [`DeviceEvent::Unknown`].
-fn mix_link_request_origin(value: &Value) -> Option<MixLinkRequestOrigin> {
-    let bytes = match value {
-        Value::Binary(b) => b,
-        _ => return None,
-    };
-    match bytes.get(2)? {
-        0x02 => Some(MixLinkRequestOrigin::ClientTrigger),
-        0x03 => Some(MixLinkRequestOrigin::DeviceAck),
-        _ => None,
-    }
 }
 
 /// Walk a parsed fullSync and produce the initial DeviceEvent list. Mirrors

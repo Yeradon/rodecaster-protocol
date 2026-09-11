@@ -5,7 +5,7 @@ use std::fmt;
 // The eleven properties a real Pro II / Duo fullSync carries on each
 // STORAGEVOLUME node (confirmed from capture, firmware 1.7.3). One volume is
 // the SD card; there may be more if other storage is attached. `storageVolume`
-// nodes address by index — see `Layout::storage_volume_path`.
+// nodes address by index: see `Layout::storage_volume_path`.
 wire_param_enum! {
     /// A storage-volume parameter: one of the flat properties the device
     /// carries on each `STORAGEVOLUME` node. Read-back state describes the
@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn storage_volume_param_state_pipe_string_is_caller_owned() {
         // `storageVolumeState` values arrive as pipe-separated strings like
-        // "15927934976|11134074880|1|1|1" — the crate types the property name,
+        // "15927934976|11134074880|1|1|1": the crate types the property name,
         // parsing the fields is the caller's job.
         assert_eq!(StorageVolumeParam::State.as_str(), "storageVolumeState");
     }

@@ -1,34 +1,8 @@
-//! JUCE `ValueTreeSynchroniser` change-frame codec.
-//!
-//! This module owns the wire format for the six change types JUCE's
-//! `ValueTreeSynchroniser` emits when a watched tree mutates. It is the layer
-//! between the raw bytes ([`crate::juce_var`], [`crate::valuetree`]) and the
-//! typed Rodecaster vocabulary ([`crate::commands`], [`crate::events`]).
-//!
-//! ## Message shapes
-//!
-//! Per upstream JUCE (`juce_ValueTreeSynchroniser.cpp`):
-//!
-//! ```text
-//! propertyChanged: [1] [compInt: path.len()] [compInts: path] [cstring: property] [var: value]
-//! propertyRemoved: [6] [compInt: path.len()] [compInts: path] [cstring: property]
-//! childAdded:      [3] [compInt: path.len()] [compInts: path] [compInt: index] [ValueTree stream]
-//! childRemoved:    [4] [compInt: path.len()] [compInts: path] [compInt: oldIndex]
-//! childMoved:      [5] [compInt: path.len()] [compInts: path] [compInt: oldIndex] [compInt: newIndex]
-//! fullSync:        [2] [ValueTree stream]
-//! ```
-//!
-//! ## Path direction
-//!
-//! On the wire the path is **root-down**: `path[0]` is the first descent from
-//! root, `path[1]` is the next, etc. JUCE's encoder walks leaf-to-root
-//! internally and reverses on write so the decoder can read top-down and
-//! descend. Both directions here use the root-down convention.
+//! JUCE ValueTree change-frame codec.
 
 use crate::juce_var::{write_compressed_int, Reader, Value};
 use crate::valuetree::{parse_node, Node};
 
-// JUCE ValueTreeSynchroniserHelpers::ChangeType (juce_ValueTreeSynchroniser.cpp).
 const PROPERTY_CHANGED: u8 = 1;
 const FULL_SYNC: u8 = 2;
 const CHILD_ADDED: u8 = 3;
@@ -36,11 +10,7 @@ const CHILD_REMOVED: u8 = 4;
 const CHILD_MOVED: u8 = 5;
 const PROPERTY_REMOVED: u8 = 6;
 
-/// A decoded JUCE change-frame.
-///
-/// Variants mirror `ValueTreeSynchroniserHelpers::ChangeType` 1:1. The `path`
-/// is the root-down sequence of child indices that locates the affected
-/// subtree (empty for changes at the root itself).
+/// A decoded ValueTree change frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChangeFrame {
     PropertyChanged {
@@ -84,8 +54,7 @@ impl ChangeFrame {
         }
     }
 
-    /// True if the change alters tree topology (any consumer-derived index over
-    /// the tree becomes potentially stale).
+    /// True if the change alters tree topology.
     pub fn is_structural(&self) -> bool {
         matches!(
             self,
@@ -97,9 +66,7 @@ impl ChangeFrame {
     }
 }
 
-/// Decode one change-frame payload (the bytes after the transport frame
-/// header). Returns `None` on truncated, malformed, or unknown change-type
-/// payloads.
+/// Decode a change-frame payload.
 pub fn decode(payload: &[u8]) -> Option<ChangeFrame> {
     let mut reader = Reader::new(payload);
     let change_type = reader.read_u8()?;
@@ -146,16 +113,10 @@ pub fn decode(payload: &[u8]) -> Option<ChangeFrame> {
         }
         _ => return None,
     };
-    // A transport packet contains exactly one change frame. Accepting trailing
-    // bytes hides framing bugs and makes corrupted fixtures appear valid.
     (reader.remaining() == 0).then_some(frame)
 }
 
 /// Encode a complete `fullSync` change-frame payload.
-///
-/// The returned bytes start with JUCE's full-sync change type and contain the
-/// complete [`Node`] stream. The transport [`crate::frame::Packet`] wraps this
-/// payload for the TCP wire.
 pub fn encode_full_sync(root: &Node) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(FULL_SYNC);
@@ -164,9 +125,6 @@ pub fn encode_full_sync(root: &Node) -> Vec<u8> {
 }
 
 /// Encode a `propertyChanged` frame.
-///
-/// `path` is root-down. The bytes returned are the change-frame payload only;
-/// the transport [`crate::frame::Packet`] wraps these for the wire.
 pub fn encode_property_changed(path: &[u32], prop_name: &str, value: &Value) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + prop_name.len() + 16);
     out.push(PROPERTY_CHANGED);
@@ -175,7 +133,7 @@ pub fn encode_property_changed(path: &[u32], prop_name: &str, value: &Value) -> 
         write_compressed_int(&mut out, p as i64);
     }
     out.extend_from_slice(prop_name.as_bytes());
-    out.push(0); // writeString trailing NUL
+    out.push(0);
     value.write_to_stream(&mut out);
     out
 }

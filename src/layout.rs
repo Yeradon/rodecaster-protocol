@@ -216,6 +216,31 @@ pub struct Layout {
     mix_minuses: Indexed,
 }
 
+macro_rules! impl_singleton {
+    ($field:ident, $path_fn:ident, $is_path_fn:ident) => {
+        pub fn $path_fn(&self) -> Option<Vec<u32>> {
+            self.$field.path()
+        }
+        pub fn $is_path_fn(&self, path: &[u32]) -> bool {
+            self.$field.is_path(path)
+        }
+    };
+}
+
+macro_rules! impl_run {
+    ($field:ident, $path_fn:ident, $index_fn:ident, $count_fn:ident) => {
+        pub fn $path_fn(&self, n: u8) -> Option<Vec<u32>> {
+            self.$field.path(n)
+        }
+        pub fn $index_fn(&self, path: &[u32]) -> Option<u8> {
+            self.$field.index_from_path(path)
+        }
+        pub fn $count_fn(&self) -> u8 {
+            self.$field.count
+        }
+    };
+}
+
 impl Layout {
     /// Walk a parsed fullSync root and discover the layout.
     ///
@@ -322,34 +347,10 @@ impl Layout {
         // PADRECORDER: a run at root (one per pad recorder instance).
         let pad_recorder = discover_run(root, "PADRECORDER");
 
-        // FXPRESET: two-level under the FXPRESETS container at root.
-        let fx_preset = match position_of_named_child(root, "FXPRESETS") {
-            Some(fp_idx) => {
-                let fp = &root.children[fp_idx as usize];
-                match position_of_named_child(fp, "FXPRESET") {
-                    Some(first) => TwoLevel {
-                        parent: Some(fp_idx),
-                        first,
-                        count: count_consecutive_named(fp, first, "FXPRESET"),
-                    },
-                    None => TwoLevel {
-                        parent: Some(fp_idx),
-                        first: 0,
-                        count: 0,
-                    },
-                }
-            }
-            None => TwoLevel {
-                parent: None,
-                first: 0,
-                count: 0,
-            },
-        };
+        // FXPRESET: two-level under FXPRESETS container at root.
+        let fx_preset = discover_two_level(root, "FXPRESETS", "FXPRESET");
 
-        // SIP subsystem discovery. SIPCALLING and SIPADVANCED are root
-        // singletons; SIPCALLSLOTS is a contiguous run at root (the Duo
-        // captures 3 consecutive slots); SIPREGISTRATION is a run of
-        // children under SIPCALLING (the Duo captures 2 registration slots).
+        // SIP subsystem discovery.
         let sip_calling = Singleton {
             idx: position_of_named_child(root, "SIPCALLING"),
         };
@@ -357,55 +358,10 @@ impl Layout {
             idx: position_of_named_child(root, "SIPADVANCED"),
         };
         let sip_call_slots = discover_run(root, "SIPCALLSLOTS");
-        let sip_registration = match sip_calling.idx {
-            Some(sc_idx) => {
-                let sc = &root.children[sc_idx as usize];
-                match position_of_named_child(sc, "SIPREGISTRATION") {
-                    Some(first) => TwoLevel {
-                        parent: Some(sc_idx),
-                        first,
-                        count: count_consecutive_named(sc, first, "SIPREGISTRATION"),
-                    },
-                    None => TwoLevel {
-                        parent: Some(sc_idx),
-                        first: 0,
-                        count: 0,
-                    },
-                }
-            }
-            None => TwoLevel {
-                parent: None,
-                first: 0,
-                count: 0,
-            },
-        };
+        let sip_registration = discover_two_level(root, "SIPCALLING", "SIPREGISTRATION");
 
-        // SOUNDPADS container under root (optional). Inside it, PAD nodes form a
-        // contiguous run; the ordinal in that run is the pad index (== the pad's
-        // own `padIdx`). Two-level addressing, so we record the container index
-        // plus the first-PAD offset and run length within it.
-        let pad = match position_of_named_child(root, "SOUNDPADS") {
-            Some(sp_idx) => {
-                let sp = &root.children[sp_idx as usize];
-                match position_of_named_child(sp, "PAD") {
-                    Some(first) => TwoLevel {
-                        parent: Some(sp_idx),
-                        first,
-                        count: count_consecutive_named(sp, first, "PAD"),
-                    },
-                    None => TwoLevel {
-                        parent: Some(sp_idx),
-                        first: 0,
-                        count: 0,
-                    },
-                }
-            }
-            None => TwoLevel {
-                parent: None,
-                first: 0,
-                count: 0,
-            },
-        };
+        // SOUNDPADS container under root.
+        let pad = discover_two_level(root, "SOUNDPADS", "PAD");
 
         // Root singletons.
         let network = Singleton {
@@ -436,53 +392,9 @@ impl Layout {
             idx: position_of_named_child(root, "RADIO"),
         };
 
-        // SHOW children under SHOWS container.
-        let show = match position_of_named_child(root, "SHOWS") {
-            Some(s_idx) => {
-                let s = &root.children[s_idx as usize];
-                match position_of_named_child(s, "SHOW") {
-                    Some(first) => TwoLevel {
-                        parent: Some(s_idx),
-                        first,
-                        count: count_consecutive_named(s, first, "SHOW"),
-                    },
-                    None => TwoLevel {
-                        parent: Some(s_idx),
-                        first: 0,
-                        count: 0,
-                    },
-                }
-            }
-            None => TwoLevel {
-                parent: None,
-                first: 0,
-                count: 0,
-            },
-        };
-
-        // RECORDING children under RECORDINGS container.
-        let recording = match position_of_named_child(root, "RECORDINGS") {
-            Some(r_idx) => {
-                let r = &root.children[r_idx as usize];
-                match position_of_named_child(r, "RECORDING") {
-                    Some(first) => TwoLevel {
-                        parent: Some(r_idx),
-                        first,
-                        count: count_consecutive_named(r, first, "RECORDING"),
-                    },
-                    None => TwoLevel {
-                        parent: Some(r_idx),
-                        first: 0,
-                        count: 0,
-                    },
-                }
-            }
-            None => TwoLevel {
-                parent: None,
-                first: 0,
-                count: 0,
-            },
-        };
+        // Container-nested runs.
+        let show = discover_two_level(root, "SHOWS", "SHOW");
+        let recording = discover_two_level(root, "RECORDINGS", "RECORDING");
 
         // Single-level runs at root.
         let storage_volume = discover_run(root, "STORAGEVOLUME");
@@ -642,28 +554,69 @@ impl Layout {
         self.pad.count
     }
 
+    // Core hardware and routing paths
+
     /// Root-down path to the `n`th `CHANNEL` node (single-level).
-    /// Used for `channelOutputMute`, `channelCueEnable`, `channelInputSource`.
     pub fn channel_path(&self, n: u8) -> Option<Vec<u32>> {
         self.channel.path(n)
     }
 
-    /// Root-down path to the `n`th `FADER` strip inside `PHYSICALINTERFACE`
-    /// (two-level). Used for `faderLevel`.
+    /// Inverse of `channel_path`: channel index from single-level path.
+    pub fn channel_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.channel.index_from_path(path)
+    }
+
+    /// Root-down path to the `n`th `FADER` strip inside `PHYSICALINTERFACE` (two-level).
     pub fn fader_path(&self, n: u8) -> Option<Vec<u32>> {
         self.fader.path(n)
     }
 
+    /// Inverse of `fader_path`: fader index from two-level path.
+    pub fn fader_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.fader.index_from_path(path)
+    }
+
     /// Root-down path to the `n`th `PAD` strip inside `SOUNDPADS` (two-level).
-    /// Used for the `pad*` properties. `None` if `n` is past the discovered run
-    /// or no SOUNDPADS container was present.
     pub fn pad_path(&self, n: u8) -> Option<Vec<u32>> {
         self.pad.path(n)
     }
 
-    /// Root-down path to the `MIX` cell at (`source`, `mix`), source-major
-    /// layout. Used for `mixLevelWithAnchor`, `mixMute`, `mixDisabled`,
-    /// `mixLink`, `mixLinkRequest`, `mixUnlinkRequest`.
+    /// Inverse of `pad_path`: pad index from two-level path.
+    pub fn pad_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.pad.index_from_path(path)
+    }
+
+    /// Root-down path to the `n`th `INPUTSOURCE` node (single-level).
+    pub fn input_source_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.input_source.path(n)
+    }
+
+    /// Inverse of `input_source_path`: which input-source ordinal does this path identify?
+    pub fn input_source_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.input_source.index_from_path(path)
+    }
+
+    /// Root-down path to the `n`th `HEADPHONE` node (single-level).
+    pub fn headphone_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.headphone.path(n)
+    }
+
+    /// Inverse of `headphone_path`: headphone index from single-level path.
+    pub fn headphone_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.headphone.index_from_path(path)
+    }
+
+    /// Root-down path to the `n`th root `EFFECTS_PARAMETERS` node (single-level).
+    pub fn effects_path(&self, n: u8) -> Option<Vec<u32>> {
+        self.effects.path(n)
+    }
+
+    /// Inverse of `effects_path`: effects-slot index from single-level path.
+    pub fn effects_index_from_path(&self, path: &[u32]) -> Option<u8> {
+        self.effects.index_from_path(path)
+    }
+
+    /// Root-down path to the `MIX` cell at (`source`, `mix`), source-major layout.
     pub fn mix_cell_path(&self, source: u8, mix: u8) -> Option<Vec<u32>> {
         if source >= self.source_count || mix >= MIX_COUNT_PER_SOURCE {
             return None;
@@ -671,489 +624,6 @@ impl Layout {
         Some(vec![
             self.first_mix + source as u32 * MIX_COUNT_PER_SOURCE as u32 + mix as u32,
         ])
-    }
-
-    /// Root-down path to the `n`th `INPUTSOURCE` node (single-level). `n` is the
-    /// source ordinal (== device `inputId` == [`crate::Source::to_protocol`]).
-    /// Used for the input* preamp properties (gain, power, mic type, phase, ...).
-    /// `None` if `n` is past the discovered run or no INPUTSOURCE was present.
-    pub fn input_source_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.input_source.path(n)
-    }
-
-    /// Inverse of `input_source_path`: which input-source ordinal does this
-    /// single-level path identify, if any?
-    pub fn input_source_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.input_source.index_from_path(path)
-    }
-
-    /// Root-down path to the single `MASTERCHANNEL` node, if present. No index:
-    /// there is exactly one master bus. Used for the master* properties
-    /// (Compellor, delay).
-    pub fn master_channel_path(&self) -> Option<Vec<u32>> {
-        self.master_channel.path()
-    }
-
-    /// True if this single-level path points at the `MASTERCHANNEL` node.
-    pub fn is_master_channel_path(&self, path: &[u32]) -> bool {
-        self.master_channel.is_path(path)
-    }
-
-    /// Root-down path to the single `OUTPUT` node, if present. No index: there
-    /// is exactly one output bus. Used for the output*/recording* properties.
-    pub fn output_path(&self) -> Option<Vec<u32>> {
-        self.output.path()
-    }
-
-    /// True if this single-level path points at the `OUTPUT` node.
-    pub fn is_output_path(&self, path: &[u32]) -> bool {
-        self.output.is_path(path)
-    }
-
-    /// Root-down path to the single `DUCKER` node, if present. No index: there is
-    /// exactly one ducker. Used for `duckerDepth`.
-    pub fn ducker_path(&self) -> Option<Vec<u32>> {
-        self.ducker.path()
-    }
-
-    /// True if this single-level path points at the `DUCKER` node.
-    pub fn is_ducker_path(&self, path: &[u32]) -> bool {
-        self.ducker.is_path(path)
-    }
-
-    /// Root-down path to the single `RECORDER` node, if present. No index: there
-    /// is exactly one recorder. Used for the record*/request* transport props.
-    pub fn recorder_path(&self) -> Option<Vec<u32>> {
-        self.recorder.path()
-    }
-
-    /// True if this single-level path points at the `RECORDER` node.
-    pub fn is_recorder_path(&self, path: &[u32]) -> bool {
-        self.recorder.is_path(path)
-    }
-
-    /// Root-down path to the single `PLAYER` node, if present. No index: there is
-    /// exactly one long-form player. Used for the player* transport/file props.
-    pub fn player_path(&self) -> Option<Vec<u32>> {
-        self.player.path()
-    }
-
-    /// True if this single-level path points at the `PLAYER` node.
-    pub fn is_player_path(&self, path: &[u32]) -> bool {
-        self.player.is_path(path)
-    }
-
-    /// Root-down path to the single `GUI` node, if present. No index: there is
-    /// exactly one front-panel UI-state node. Used for the gui* / screen* /
-    /// touchscreen-EQ-focus properties.
-    pub fn gui_path(&self) -> Option<Vec<u32>> {
-        self.gui.path()
-    }
-
-    /// True if this single-level path points at the `GUI` node.
-    pub fn is_gui_path(&self, path: &[u32]) -> bool {
-        self.gui.is_path(path)
-    }
-
-    /// Root-down path to the single `SYSTEM` node, if present. No index: there is
-    /// exactly one device-wide state node. Used for the system* / update* /
-    /// download* / disableAll* / usb* / share* properties.
-    pub fn system_path(&self) -> Option<Vec<u32>> {
-        self.system.path()
-    }
-
-    /// True if this single-level path points at the `SYSTEM` node.
-    pub fn is_system_path(&self, path: &[u32]) -> bool {
-        self.system.is_path(path)
-    }
-
-    /// Root-down path to the singleton `SIPCALLING` node, if present. Owns
-    /// the SIP hosting flags, invite code, call-setup channels, and
-    /// subscription meters.
-    pub fn sip_calling_path(&self) -> Option<Vec<u32>> {
-        self.sip_calling.path()
-    }
-
-    /// True if this single-level path points at the `SIPCALLING` node.
-    pub fn is_sip_calling_path(&self, path: &[u32]) -> bool {
-        self.sip_calling.is_path(path)
-    }
-
-    /// Root-down path to the singleton `SIPADVANCED` node, if present. Owns
-    /// the codec / audio-routing / DTMF / jitter-buffer / account
-    /// credentials / NAT-traversal settings.
-    pub fn sip_advanced_path(&self) -> Option<Vec<u32>> {
-        self.sip_advanced.path()
-    }
-
-    /// True if this single-level path points at the `SIPADVANCED` node.
-    pub fn is_sip_advanced_path(&self, path: &[u32]) -> bool {
-        self.sip_advanced.is_path(path)
-    }
-
-    /// Root-down path to the `n`th `SIPCALLSLOTS` node (single-level).
-    /// Duo firmware carries three consecutive call slots. `None` if `n` is
-    /// past the discovered run.
-    pub fn sip_call_slots_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.sip_call_slots.path(n)
-    }
-
-    /// Inverse of [`Self::sip_call_slots_path`]: the call-slot ordinal, if
-    /// this single-level path falls inside the discovered run.
-    pub fn sip_call_slots_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.sip_call_slots.index_from_path(path)
-    }
-
-    /// Number of discovered `SIPCALLSLOTS` nodes.
-    pub fn sip_call_slots_count(&self) -> u8 {
-        self.sip_call_slots.count
-    }
-
-    /// Root-down two-level path to the `n`th `SIPREGISTRATION` child under
-    /// `SIPCALLING`. Duo firmware carries two registration slots. `None` if
-    /// `n` is past the discovered run or SIPCALLING is absent.
-    pub fn sip_registration_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.sip_registration.path(n)
-    }
-
-    /// Inverse of [`Self::sip_registration_path`]: the registration ordinal
-    /// this two-level path identifies, if any.
-    pub fn sip_registration_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.sip_registration.index_from_path(path)
-    }
-
-    /// Number of discovered `SIPREGISTRATION` child nodes under SIPCALLING.
-    pub fn sip_registration_count(&self) -> u8 {
-        self.sip_registration.count
-    }
-
-    /// Root-down path to the singleton `TEST` diagnostic node, if present.
-    pub fn test_path(&self) -> Option<Vec<u32>> {
-        self.test.path()
-    }
-
-    /// True if this single-level path points at the `TEST` node.
-    pub fn is_test_path(&self, path: &[u32]) -> bool {
-        self.test.is_path(path)
-    }
-
-    /// Root-down path to the `n`th `PADRECORDER` node in the discovered run.
-    /// `None` if `n` is past the run or no PADRECORDER nodes were present.
-    pub fn pad_recorder_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.pad_recorder.path(n)
-    }
-
-    /// Inverse of [`Self::pad_recorder_path`]: the recorder ordinal, if this
-    /// single-level path falls inside the discovered run.
-    pub fn pad_recorder_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.pad_recorder.index_from_path(path)
-    }
-
-    /// Number of discovered `PADRECORDER` nodes.
-    pub fn pad_recorder_count(&self) -> u8 {
-        self.pad_recorder.count
-    }
-
-    /// Root-down two-level path to the `n`th `FXPRESET` child under
-    /// `FXPRESETS`. `None` if `n` is past the discovered run or FXPRESETS
-    /// is absent.
-    pub fn fx_preset_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.fx_preset.path(n)
-    }
-
-    /// Inverse of [`Self::fx_preset_path`]: the preset ordinal, if this
-    /// two-level path identifies an FXPRESET under FXPRESETS.
-    pub fn fx_preset_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.fx_preset.index_from_path(path)
-    }
-
-    /// Number of discovered `FXPRESET` child nodes under FXPRESETS.
-    pub fn fx_preset_count(&self) -> u8 {
-        self.fx_preset.count
-    }
-
-    /// Root-down path to the singleton `NETWORK` node, if present.
-    pub fn network_path(&self) -> Option<Vec<u32>> {
-        self.network.path()
-    }
-
-    /// True if this single-level path points at the `NETWORK` node.
-    pub fn is_network_path(&self, path: &[u32]) -> bool {
-        self.network.is_path(path)
-    }
-
-    /// Root-down path to the singleton `AUDIO` node, if present.
-    pub fn audio_path(&self) -> Option<Vec<u32>> {
-        self.audio.path()
-    }
-
-    /// True if this single-level path points at the `AUDIO` node.
-    pub fn is_audio_path(&self, path: &[u32]) -> bool {
-        self.audio.is_path(path)
-    }
-
-    /// Root-down path to the singleton `BUILD` node, if present.
-    pub fn build_path(&self) -> Option<Vec<u32>> {
-        self.build.path()
-    }
-
-    /// True if this single-level path points at the `BUILD` node.
-    pub fn is_build_path(&self, path: &[u32]) -> bool {
-        self.build.is_path(path)
-    }
-
-    /// Root-down path to the singleton `APP` node, if present.
-    pub fn app_path(&self) -> Option<Vec<u32>> {
-        self.app.path()
-    }
-
-    /// True if this single-level path points at the `APP` node.
-    pub fn is_app_path(&self, path: &[u32]) -> bool {
-        self.app.is_path(path)
-    }
-
-    /// Root-down path to the singleton `THEME` node, if present.
-    pub fn theme_path(&self) -> Option<Vec<u32>> {
-        self.theme.path()
-    }
-
-    /// True if this single-level path points at the `THEME` node.
-    pub fn is_theme_path(&self, path: &[u32]) -> bool {
-        self.theme.is_path(path)
-    }
-
-    /// Root-down path to the singleton `CURRENTSHOW` node, if present.
-    pub fn current_show_path(&self) -> Option<Vec<u32>> {
-        self.current_show.path()
-    }
-
-    /// True if this single-level path points at the `CURRENTSHOW` node.
-    pub fn is_current_show_path(&self, path: &[u32]) -> bool {
-        self.current_show.is_path(path)
-    }
-
-    /// Root-down path to the singleton `SHOWCONTROL` node, if present.
-    pub fn show_control_path(&self) -> Option<Vec<u32>> {
-        self.show_control.path()
-    }
-
-    /// True if this single-level path points at the `SHOWCONTROL` node.
-    pub fn is_show_control_path(&self, path: &[u32]) -> bool {
-        self.show_control.is_path(path)
-    }
-
-    /// Root-down path to the singleton `RECORDINGS` node, if present.
-    pub fn recordings_path(&self) -> Option<Vec<u32>> {
-        self.recordings.path()
-    }
-
-    /// True if this single-level path points at the `RECORDINGS` node.
-    pub fn is_recordings_path(&self, path: &[u32]) -> bool {
-        self.recordings.is_path(path)
-    }
-
-    /// Root-down path to the singleton `RADIO` node, if present.
-    pub fn radio_path(&self) -> Option<Vec<u32>> {
-        self.radio.path()
-    }
-
-    /// True if this single-level path points at the `RADIO` node.
-    pub fn is_radio_path(&self, path: &[u32]) -> bool {
-        self.radio.is_path(path)
-    }
-
-    /// Root-down two-level path to the `n`th `SHOW` child under `SHOWS`.
-    pub fn show_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.show.path(n)
-    }
-
-    /// Inverse of [`Self::show_path`].
-    pub fn show_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.show.index_from_path(path)
-    }
-
-    /// Number of discovered `SHOW` child nodes under SHOWS.
-    pub fn show_count(&self) -> u8 {
-        self.show.count
-    }
-
-    /// Root-down two-level path to the `n`th `RECORDING` child under `RECORDINGS`.
-    pub fn recording_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.recording.path(n)
-    }
-
-    /// Inverse of [`Self::recording_path`].
-    pub fn recording_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.recording.index_from_path(path)
-    }
-
-    /// Number of discovered `RECORDING` child nodes under RECORDINGS.
-    pub fn recording_count(&self) -> u8 {
-        self.recording.count
-    }
-
-    /// Root-down path to the `n`th `STORAGEVOLUME` node.
-    pub fn storage_volume_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.storage_volume.path(n)
-    }
-
-    /// Inverse of [`Self::storage_volume_path`].
-    pub fn storage_volume_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.storage_volume.index_from_path(path)
-    }
-
-    /// Number of discovered `STORAGEVOLUME` nodes.
-    pub fn storage_volume_count(&self) -> u8 {
-        self.storage_volume.count
-    }
-
-    /// Root-down path to the `n`th `RADIOTX` node.
-    pub fn radio_tx_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.radio_tx.path(n)
-    }
-
-    /// Inverse of [`Self::radio_tx_path`].
-    pub fn radio_tx_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.radio_tx.index_from_path(path)
-    }
-
-    /// Number of discovered `RADIOTX` nodes.
-    pub fn radio_tx_count(&self) -> u8 {
-        self.radio_tx.count
-    }
-
-    /// Root-down path to the `n`th `RADIORX` node.
-    pub fn radio_rx_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.radio_rx.path(n)
-    }
-
-    /// Inverse of [`Self::radio_rx_path`].
-    pub fn radio_rx_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.radio_rx.index_from_path(path)
-    }
-
-    /// Number of discovered `RADIORX` nodes.
-    pub fn radio_rx_count(&self) -> u8 {
-        self.radio_rx.count
-    }
-
-    /// Root-down path to the `n`th `WIFISCANRESULT` node.
-    pub fn wifi_scan_result_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.wifi_scan_result.path(n)
-    }
-
-    /// Inverse of [`Self::wifi_scan_result_path`].
-    pub fn wifi_scan_result_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.wifi_scan_result.index_from_path(path)
-    }
-
-    /// Number of discovered `WIFISCANRESULT` nodes.
-    pub fn wifi_scan_result_count(&self) -> u8 {
-        self.wifi_scan_result.count
-    }
-
-    /// Root-down path to the `n`th `STREAMERXMIXPRESET` node.
-    pub fn streamerx_mix_preset_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.streamerx_mix_preset.path(n)
-    }
-
-    /// Inverse of [`Self::streamerx_mix_preset_path`].
-    pub fn streamerx_mix_preset_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.streamerx_mix_preset.index_from_path(path)
-    }
-
-    /// Number of discovered `STREAMERXMIXPRESET` nodes.
-    pub fn streamerx_mix_preset_count(&self) -> u8 {
-        self.streamerx_mix_preset.count
-    }
-
-    /// Root-down path to the `n`th `STREAMERXSTREAMMIX` node.
-    pub fn streamerx_stream_mix_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.streamerx_stream_mix.path(n)
-    }
-
-    /// Inverse of [`Self::streamerx_stream_mix_path`].
-    pub fn streamerx_stream_mix_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.streamerx_stream_mix.index_from_path(path)
-    }
-
-    /// Number of discovered `STREAMERXSTREAMMIX` nodes.
-    pub fn streamerx_stream_mix_count(&self) -> u8 {
-        self.streamerx_stream_mix.count
-    }
-
-    /// Root-down path to the `n`th `RCSYNCMIX` node.
-    pub fn rcsync_mix_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.rcsync_mix.path(n)
-    }
-
-    /// Inverse of [`Self::rcsync_mix_path`].
-    pub fn rcsync_mix_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.rcsync_mix.index_from_path(path)
-    }
-
-    /// Number of discovered `RCSYNCMIX` nodes.
-    pub fn rcsync_mix_count(&self) -> u8 {
-        self.rcsync_mix.count
-    }
-
-    /// Root-down path to the `n`th `MIXMINUSES` node.
-    pub fn mix_minuses_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.mix_minuses.path(n)
-    }
-
-    /// Inverse of [`Self::mix_minuses_path`].
-    pub fn mix_minuses_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.mix_minuses.index_from_path(path)
-    }
-
-    /// Number of discovered `MIXMINUSES` nodes.
-    pub fn mix_minuses_count(&self) -> u8 {
-        self.mix_minuses.count
-    }
-
-    /// Root-down path to the `n`th `HEADPHONE` node (single-level). `n` is the
-    /// headphone-jack index. `None` if `n` is past the discovered run or no
-    /// HEADPHONE node was present.
-    pub fn headphone_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.headphone.path(n)
-    }
-
-    /// Inverse of `headphone_path`: which headphone index does this single-level
-    /// path identify, if any?
-    pub fn headphone_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.headphone.index_from_path(path)
-    }
-
-    /// Root-down path to the `n`th root `EFFECTS_PARAMETERS` node (single-level).
-    /// `n` is the effects-slot index (== the node's `effectsIdx`). `None` if `n`
-    /// is past the discovered run or no root EFFECTS_PARAMETERS node was present.
-    pub fn effects_path(&self, n: u8) -> Option<Vec<u32>> {
-        self.effects.path(n)
-    }
-
-    /// Inverse of `effects_path`: which effects-slot index does this single-level
-    /// path identify, if any?
-    pub fn effects_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.effects.index_from_path(path)
-    }
-
-    /// Inverse of `channel_path`: which channel index does this single-level
-    /// path identify, if any?
-    pub fn channel_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.channel.index_from_path(path)
-    }
-
-    /// Inverse of `fader_path`: which fader index does this two-level path
-    /// identify, if any?
-    pub fn fader_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.fader.index_from_path(path)
-    }
-
-    /// Inverse of `pad_path`: which pad index does this two-level path identify,
-    /// if any?
-    pub fn pad_index_from_path(&self, path: &[u32]) -> Option<u8> {
-        self.pad.index_from_path(path)
     }
 
     /// Inverse of `mix_cell_path`: which (source, mix) cell, if any?
@@ -1174,6 +644,108 @@ impl Layout {
         let mix = (offset % MIX_COUNT_PER_SOURCE as u32) as u8;
         Some((source, mix))
     }
+
+    // Singleton node accessors
+    impl_singleton!(master_channel, master_channel_path, is_master_channel_path);
+    impl_singleton!(output, output_path, is_output_path);
+    impl_singleton!(ducker, ducker_path, is_ducker_path);
+    impl_singleton!(recorder, recorder_path, is_recorder_path);
+    impl_singleton!(player, player_path, is_player_path);
+    impl_singleton!(gui, gui_path, is_gui_path);
+    impl_singleton!(system, system_path, is_system_path);
+    impl_singleton!(sip_calling, sip_calling_path, is_sip_calling_path);
+    impl_singleton!(sip_advanced, sip_advanced_path, is_sip_advanced_path);
+    impl_singleton!(test, test_path, is_test_path);
+    impl_singleton!(network, network_path, is_network_path);
+    impl_singleton!(audio, audio_path, is_audio_path);
+    impl_singleton!(build, build_path, is_build_path);
+    impl_singleton!(app, app_path, is_app_path);
+    impl_singleton!(theme, theme_path, is_theme_path);
+    impl_singleton!(current_show, current_show_path, is_current_show_path);
+    impl_singleton!(show_control, show_control_path, is_show_control_path);
+    impl_singleton!(recordings, recordings_path, is_recordings_path);
+    impl_singleton!(radio, radio_path, is_radio_path);
+
+    // Indexed and container-nested run accessors
+    impl_run!(
+        sip_call_slots,
+        sip_call_slots_path,
+        sip_call_slots_index_from_path,
+        sip_call_slots_count
+    );
+    impl_run!(
+        sip_registration,
+        sip_registration_path,
+        sip_registration_index_from_path,
+        sip_registration_count
+    );
+    impl_run!(
+        pad_recorder,
+        pad_recorder_path,
+        pad_recorder_index_from_path,
+        pad_recorder_count
+    );
+    impl_run!(
+        fx_preset,
+        fx_preset_path,
+        fx_preset_index_from_path,
+        fx_preset_count
+    );
+    impl_run!(show, show_path, show_index_from_path, show_count);
+    impl_run!(
+        recording,
+        recording_path,
+        recording_index_from_path,
+        recording_count
+    );
+    impl_run!(
+        storage_volume,
+        storage_volume_path,
+        storage_volume_index_from_path,
+        storage_volume_count
+    );
+    impl_run!(
+        radio_tx,
+        radio_tx_path,
+        radio_tx_index_from_path,
+        radio_tx_count
+    );
+    impl_run!(
+        radio_rx,
+        radio_rx_path,
+        radio_rx_index_from_path,
+        radio_rx_count
+    );
+    impl_run!(
+        wifi_scan_result,
+        wifi_scan_result_path,
+        wifi_scan_result_index_from_path,
+        wifi_scan_result_count
+    );
+    impl_run!(
+        streamerx_mix_preset,
+        streamerx_mix_preset_path,
+        streamerx_mix_preset_index_from_path,
+        streamerx_mix_preset_count
+    );
+    impl_run!(
+        streamerx_stream_mix,
+        streamerx_stream_mix_path,
+        streamerx_stream_mix_index_from_path,
+        streamerx_stream_mix_count
+    );
+    impl_run!(
+        rcsync_mix,
+        rcsync_mix_path,
+        rcsync_mix_index_from_path,
+        rcsync_mix_count
+    );
+    impl_run!(
+        mix_minuses,
+        mix_minuses_path,
+        mix_minuses_index_from_path,
+        mix_minuses_count
+    );
 }
 
 /// Read the `SYSTEM` node's `boardType` / `systemName` and resolve the model.
@@ -1208,6 +780,33 @@ fn discover_run(parent: &Node, name: &str) -> Indexed {
         },
         None => Indexed {
             first: None,
+            count: 0,
+        },
+    }
+}
+
+/// Discover a two-level run of `child_name` nodes inside a `container_name` parent
+/// as a [`TwoLevel`] addressing shape. Absent -> `parent: None, first: 0, count: 0`.
+fn discover_two_level(root: &Node, container_name: &str, child_name: &str) -> TwoLevel {
+    match position_of_named_child(root, container_name) {
+        Some(parent) => {
+            let container = &root.children[parent as usize];
+            match position_of_named_child(container, child_name) {
+                Some(first) => TwoLevel {
+                    parent: Some(parent),
+                    first,
+                    count: count_consecutive_named(container, first, child_name),
+                },
+                None => TwoLevel {
+                    parent: Some(parent),
+                    first: 0,
+                    count: 0,
+                },
+            }
+        }
+        None => TwoLevel {
+            parent: None,
+            first: 0,
             count: 0,
         },
     }

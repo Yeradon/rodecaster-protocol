@@ -5,7 +5,7 @@ use std::fmt;
 // The four properties a real Pro II / Duo fullSync carries on the single APP
 // node (confirmed from capture, firmware 1.7.3): companion-app-mode flags.
 // These reflect the device's understanding of the RODE Connect app's current
-// state — used to auto-configure DSP for common companion-app workflows.
+// state: used to auto-configure DSP for common companion-app workflows.
 wire_param_enum! {
     /// A companion-app-mode parameter: one of the flat properties the device
     /// carries on the singleton `APP` node. Reflects the device's view of
