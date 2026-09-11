@@ -62,6 +62,8 @@ fn high_level_session_discovers_duo_capabilities() {
     assert_eq!(capabilities.mix_outputs().len(), 13);
     assert!(capabilities.supports_fader(Fader::Physical4));
     assert!(!capabilities.supports_fader(Fader::Physical5));
+    assert_eq!(capabilities.physical_combo_count(), 2);
+    assert_eq!(capabilities.physical_headphone_count(), 2);
     assert_eq!(initial_events.len(), 3_068);
 
     let payloads = session

@@ -1,7 +1,5 @@
 //! [`DuckerParam`]: the singleton `DUCKER`-node parameter family.
 
-use std::fmt;
-
 // The single property a real Pro II / Duo fullSync carries on the single DUCKER
 // node (confirmed from capture, firmware 1.7.3): the auto-duck depth in dB.
 wire_param_enum! {

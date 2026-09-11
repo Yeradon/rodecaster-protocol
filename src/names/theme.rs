@@ -1,7 +1,5 @@
 //! [`ThemeParam`]: the singleton `THEME`-node parameter family.
 
-use std::fmt;
-
 // The one property the THEME node carries (confirmed from capture, firmware
 // 1.7.3): the currently-selected UI theme identifier. Value is an Int
 // selecting one of the device's built-in themes.

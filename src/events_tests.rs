@@ -175,7 +175,7 @@ fn decodes_mix_link_request_client_trigger_and_device_ack() {
             source,
             mix,
             direction: MixLinkDirection::Link,
-            origin: MixLinkRequestOrigin::ClientTrigger,
+            origin: TriggerPhase::Press,
         }
     );
     assert_eq!(
@@ -184,7 +184,7 @@ fn decodes_mix_link_request_client_trigger_and_device_ack() {
             source,
             mix,
             direction: MixLinkDirection::Link,
-            origin: MixLinkRequestOrigin::DeviceAck,
+            origin: TriggerPhase::Release,
         }
     );
 }
@@ -207,7 +207,7 @@ fn decodes_mix_unlink_request_direction_from_property_name() {
             source: Source::from_protocol(0).unwrap(),
             mix: MixOutput::from_protocol(0).unwrap(),
             direction: MixLinkDirection::Unlink,
-            origin: MixLinkRequestOrigin::DeviceAck,
+            origin: TriggerPhase::Release,
         }
     );
 }
@@ -1041,4 +1041,66 @@ fn full_sync_yields_initial_state_with_extracted_events() {
     } else {
         panic!("expected MixLevelChanged at end");
     }
+}
+
+#[test]
+fn decodes_mix_minuses_param_changed_with_index() {
+    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
+    let mut children = vec![phys, n("CHANNEL")];
+    for _ in 0..13 {
+        children.push(n("MIX"));
+    }
+    children.push(n("MIXMINUSES"));
+    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+    let path = l.mix_minuses_path(0).unwrap();
+    let payload = encode_property_changed(&path, "outputMixMinus", &Value::Bool(true));
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::MixMinusesParamChanged {
+            minuses: 0,
+            param: MixMinusesParam::OutputMixMinus,
+            value: Value::Bool(true),
+        }
+    );
+}
+
+#[test]
+fn decodes_rcsync_mix_param_changed_with_index() {
+    let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
+    let mut children = vec![phys, n("CHANNEL")];
+    for _ in 0..13 {
+        children.push(n("MIX"));
+    }
+    children.push(n("RCSYNCMIX"));
+    let l = Layout::from_full_sync(&nc("DEVICE", children)).unwrap();
+    let path = l.rcsync_mix_path(0).unwrap();
+    let payload = encode_property_changed(&path, "mixMute", &Value::Bool(true));
+    let event = decode_event(&payload, &l).unwrap();
+    assert_eq!(
+        event,
+        DeviceEvent::RcSyncMixParamChanged {
+            mix: 0,
+            param: RcSyncMixParam::MixMute,
+            value: Value::Bool(true),
+        }
+    );
+}
+
+#[test]
+fn decode_event_from_frame_matches_decode_event() {
+    let l = layout();
+    let path = l.channel_path(0).unwrap();
+    let payload = encode_property_changed(&path, "channelOutputMute", &Value::Bool(true));
+    let frame = crate::change_frame::decode(&payload).unwrap();
+    let event_from_frame = decode_event_from_frame(frame, &l);
+    let event_from_bytes = decode_event(&payload, &l).unwrap();
+    assert_eq!(event_from_frame, event_from_bytes);
+    assert_eq!(
+        event_from_frame,
+        DeviceEvent::FaderMuteChanged {
+            fader: Fader::Physical1,
+            muted: true,
+        }
+    );
 }

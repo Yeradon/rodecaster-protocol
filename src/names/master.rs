@@ -1,7 +1,5 @@
 //! [`MasterParam`]: the singleton `MASTERCHANNEL`-node parameter family.
 
-use std::fmt;
-
 // The seven properties a real Pro II / Duo fullSync carries on the single
 // MASTERCHANNEL node (confirmed from capture, firmware 1.7.3): the master-bus
 // Compellor (RODE's compressor/leveller) plus the master delay.

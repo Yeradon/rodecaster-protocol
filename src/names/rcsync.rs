@@ -9,8 +9,6 @@
 //! discovered `first_mix + source * MIX_COUNT_PER_SOURCE + mix` run, while
 //! RCSYNCMIX sits elsewhere.
 
-use std::fmt;
-
 wire_param_enum! {
     /// A per-rcSync-mix parameter: the flat properties on each `RCSYNCMIX`
     /// node. Six wire names are shared with the regular `MIX` cell family

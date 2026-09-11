@@ -1,7 +1,5 @@
 //! [`BuildParam`]: the singleton `BUILD`-node parameter family.
 
-use std::fmt;
-
 // The five properties a real Pro II / Duo fullSync carries on the single
 // BUILD node (confirmed from capture, firmware 1.7.3): the CallMe library
 // version, plus GUI and mixer module git shas + version strings. All strings.

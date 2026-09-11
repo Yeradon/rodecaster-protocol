@@ -1,7 +1,5 @@
 //! [`PadParam`]: the per-pad `PAD`-node parameter family (nested under `SOUNDPADS`).
 
-use std::fmt;
-
 // The forty-eight properties a real Pro II / Duo fullSync carries on each `PAD`
 // node (confirmed from capture, firmware 1.7.3). The `PAD` nodes are nested
 // children of the single root `SOUNDPADS` node (one per sound pad), with `padIdx`

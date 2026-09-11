@@ -1,7 +1,5 @@
 //! [`HeadphoneParam`]: the per-jack `HEADPHONE`-node parameter family.
 
-use std::fmt;
-
 // The two properties a real Pro II / Duo fullSync carries on each HEADPHONE
 // node (confirmed from capture, firmware 1.7.3). Unlike MASTERCHANNEL / OUTPUT /
 // DUCKER, HEADPHONE is multi-instance (one per physical headphone jack: 4 on the

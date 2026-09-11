@@ -14,41 +14,13 @@
 //! These exercise the *integration* between the layers; per-module unit tests
 //! cover each layer in isolation.
 
+use rodecaster_protocol::test_fixtures::{n, nc, np, prop};
 use rodecaster_protocol::{
     change_frame::{decode as decode_change_frame, encode_property_changed, ChangeFrame},
     decode_event, ChannelParam, Command, DeviceEvent, DuckerParam, EffectsParam, Fader, GuiParam,
-    HeadphoneParam, InputSourceParam, Layout, MasterParam, MixLinkDirection, MixLinkRequestOrigin,
-    MixOutput, Node, OutputParam, PadParam, PlayerParam, Property, RecorderParam, Source,
-    SystemParam, Value,
+    HeadphoneParam, InputSourceParam, Layout, MasterParam, MixLinkDirection, MixOutput, Node,
+    OutputParam, PadParam, PlayerParam, RecorderParam, Source, SystemParam, TriggerPhase, Value,
 };
-
-fn n(name: &str) -> Node {
-    Node {
-        name: name.to_string(),
-        properties: vec![],
-        children: vec![],
-    }
-}
-fn np(name: &str, properties: Vec<Property>) -> Node {
-    Node {
-        name: name.to_string(),
-        properties,
-        children: vec![],
-    }
-}
-fn nc(name: &str, children: Vec<Node>) -> Node {
-    Node {
-        name: name.to_string(),
-        properties: vec![],
-        children,
-    }
-}
-fn prop(name: &str, value: Value) -> Property {
-    Property {
-        name: name.to_string(),
-        value,
-    }
-}
 
 /// Synthetic fullSync that puts the addressable families at NON-default
 /// positions, so every test below fails if any code accidentally hardcodes
@@ -206,6 +178,33 @@ fn round_trip_set_mix_disabled() {
             disabled: true,
         }
     );
+}
+
+#[test]
+fn round_trip_set_mix_level() {
+    let l = layout();
+    let cmd = Command::SetMixLevel {
+        source: Source::Combo2,
+        mix: MixOutput::Usb1,
+        anchor: 0.5,
+        value: 0.8,
+    };
+    let payloads = cmd.encode(&l).unwrap();
+    let event = decode_event(&payloads[0], &l).unwrap();
+    match event {
+        DeviceEvent::MixLevelChanged {
+            source,
+            mix,
+            anchor,
+            value,
+        } => {
+            assert_eq!(source, Source::Combo2);
+            assert_eq!(mix, MixOutput::Usb1);
+            assert!((anchor - 0.5).abs() < 1e-4);
+            assert!((value - 0.8).abs() < 1e-4);
+        }
+        other => panic!("expected MixLevelChanged, got {other:?}"),
+    }
 }
 
 #[test]
@@ -679,7 +678,7 @@ fn round_trip_link_mix_emits_device_exact_sequence() {
             source: Source::Combo1,
             mix: MixOutput::Speaker,
             direction: MixLinkDirection::Link,
-            origin: MixLinkRequestOrigin::ClientTrigger,
+            origin: TriggerPhase::Press,
         }
     );
 }
@@ -703,7 +702,7 @@ fn round_trip_unlink_mix_is_single_trigger_frame() {
             source: Source::Combo1,
             mix: MixOutput::Speaker,
             direction: MixLinkDirection::Unlink,
-            origin: MixLinkRequestOrigin::ClientTrigger,
+            origin: TriggerPhase::Press,
         }
     );
 }

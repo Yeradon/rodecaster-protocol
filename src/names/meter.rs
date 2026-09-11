@@ -1,7 +1,5 @@
 //! [`MeterParam`]: per-`METER`-node parameter family.
 
-use std::fmt;
-
 // The six properties each METER node carries (confirmed from capture,
 // firmware 1.7.3): a passthrough fader-level snapshot and left/right meter
 // level + peak values, plus a `meterStereo` flag distinguishing stereo pairs.

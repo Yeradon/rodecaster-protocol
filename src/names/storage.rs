@@ -1,7 +1,5 @@
 //! [`StorageVolumeParam`]: per-`STORAGEVOLUME`-node parameter family.
 
-use std::fmt;
-
 // The eleven properties a real Pro II / Duo fullSync carries on each
 // STORAGEVOLUME node (confirmed from capture, firmware 1.7.3). One volume is
 // the SD card; there may be more if other storage is attached. `storageVolume`

@@ -1,7 +1,5 @@
 //! [`EffectsParam`]: the per-slot root `EFFECTS_PARAMETERS`-node parameter family.
 
-use std::fmt;
-
 // The (up to) twenty-one properties a real Pro II / Duo fullSync carries on each
 // root-level EFFECTS_PARAMETERS node (confirmed from capture, firmware 1.7.3).
 // The device exposes a contiguous run of these at the tree root, one per

@@ -1,7 +1,5 @@
 //! [`InputSourceParam`]: the per-source `INPUTSOURCE`-node parameter family.
 
-use std::fmt;
-
 // The twelve properties a real Pro II / Duo fullSync carries on every
 // INPUTSOURCE node (confirmed from capture, firmware 1.7.3).
 wire_param_enum! {

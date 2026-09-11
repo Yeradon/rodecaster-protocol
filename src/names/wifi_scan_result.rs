@@ -1,7 +1,5 @@
 //! [`WifiScanResultParam`]: per-`WIFISCANRESULT`-node parameter family.
 
-use std::fmt;
-
 // WIFISCANRESULT nodes carry a single property per scan result (confirmed
 // from capture, firmware 1.7.3): the SSID string. The device populates a
 // contiguous run of these nodes as WiFi scans complete; each holds one

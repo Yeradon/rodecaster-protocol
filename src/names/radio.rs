@@ -2,8 +2,6 @@
 //! [`RadioTxParam`] (per-transmitter state), and [`RadioRxParam`]
 //! (per-receiver state).
 
-use std::fmt;
-
 // RADIO node carries three pairing-lifecycle properties (confirmed from
 // capture, firmware 1.7.3). Pair/Unpair are command channels; Paired is a
 // read-back flag reporting the current pairing state.

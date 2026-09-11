@@ -1,7 +1,5 @@
 //! [`NetworkParam`]: the singleton `NETWORK`-node parameter family.
 
-use std::fmt;
-
 // The fifty-six properties a real Pro II / Duo fullSync carries on the single
 // NETWORK node (confirmed from capture, firmware 1.7.3): Bluetooth pairing +
 // scan slots, cellular link, wired networking, WiFi PSK / SSID / scan slots.

@@ -1,8 +1,35 @@
-//! Typed Rodecaster device events.
+//! Inbound typed event notifications from a RØDECaster console.
 //!
-//! `DeviceEvent` is the inbound vocabulary received from the device.
-//! [`decode_event`] decodes a wire payload into a typed event using
-//! a [`crate::Layout`] discovered from the device's fullSync.
+//! [`DeviceEvent`] represents notifications emitted by the device in response
+//! to hardware changes or user actions:
+//!
+//! - Physical or virtual fader movements.
+//! - Mute and cue/solo button toggles.
+//! - Rotary encoder adjustments and color updates.
+//! - Input source assignment changes.
+//! - Audio processing adjustments (EQ, dynamics, HPF, pan).
+//! - Sub-mix changes and routing matrix links.
+//!
+//! # Handling Events
+//!
+//! When using [`crate::ProtocolSession`], events are yielded by
+//! [`crate::ProtocolSession::ingest`]:
+//!
+//! ```rust
+//! use rodecaster_protocol::{DeviceEvent, Fader};
+//!
+//! fn handle_event(event: DeviceEvent) {
+//!     match event {
+//!         DeviceEvent::FaderLevelChanged { fader, level } => {
+//!             println!("{fader:?} level is now {level}");
+//!         }
+//!         DeviceEvent::FaderMuteChanged { fader, muted } => {
+//!             println!("{fader:?} muted: {muted}");
+//!         }
+//!         _ => {}
+//!     }
+//! }
+//! ```
 
 use crate::change_frame::{decode as decode_frame, ChangeFrame};
 use crate::juce_var::Value;
@@ -17,9 +44,11 @@ use crate::names::{
     StreamerXMixPresetParam, StreamerXStreamMixParam, SystemParam, TestParam, ThemeParam,
     WifiScanResultParam,
 };
+use crate::trigger::decode_phase;
+pub use crate::trigger::TriggerPhase;
 use crate::valuetree::Node;
 
-/// Typed event decoded from one wire payload.
+/// A typed event emitted by a connected RØDECaster console.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum DeviceEvent {
@@ -296,12 +325,17 @@ pub enum DeviceEvent {
 
     /// Mix-minus routing parameter changed.
     MixMinusesParamChanged {
+        minuses: u8,
         param: MixMinusesParam,
         value: Value,
     },
 
     /// rcSync mix routing parameter changed.
-    RcSyncMixParamChanged { param: RcSyncMixParam, value: Value },
+    RcSyncMixParamChanged {
+        mix: u8,
+        param: RcSyncMixParam,
+        value: Value,
+    },
 
     /// Tree topology changed (child added, removed, or moved); layout should be rebuilt.
     LayoutInvalidated,
@@ -323,8 +357,8 @@ pub enum MixLinkDirection {
     Unlink,
 }
 
-/// Origin of a mix-cell link request observation (alias for [`crate::trigger::TriggerOrigin`]).
-pub type MixLinkRequestOrigin = crate::trigger::TriggerOrigin;
+/// Origin of a mix-cell link request observation (alias for [`TriggerPhase`]).
+pub type MixLinkRequestOrigin = TriggerPhase;
 
 /// Decode one wire payload (the change-frame, not including transport frame)
 /// into a typed event. Returns `None` if the payload isn't a recognized JUCE
@@ -332,6 +366,12 @@ pub type MixLinkRequestOrigin = crate::trigger::TriggerOrigin;
 pub fn decode_event(payload: &[u8], layout: &Layout) -> Option<DeviceEvent> {
     let frame = decode_frame(payload)?;
     Some(decode_change_frame(frame, layout))
+}
+
+/// Decode an already-parsed [`ChangeFrame`] through the discovered [`Layout`]
+/// into a typed [`DeviceEvent`].
+pub fn decode_event_from_frame(frame: ChangeFrame, layout: &Layout) -> DeviceEvent {
+    decode_change_frame(frame, layout)
 }
 
 fn decode_change_frame(frame: ChangeFrame, layout: &Layout) -> DeviceEvent {
@@ -442,7 +482,7 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
             // mixLinkRequest / mixUnlinkRequest at a cell's single-level path.
             // Direction = property name; origin = momentary trigger state.
             "mixLinkRequest" | "mixUnlinkRequest" => {
-                if let Some(origin) = value.as_ref().and_then(crate::trigger::decode_origin) {
+                if let Some(origin) = value.as_ref().and_then(decode_phase) {
                     let direction = if name == "mixLinkRequest" {
                         MixLinkDirection::Link
                     } else {
@@ -582,167 +622,130 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     // The wire-name set is unique to the NETWORK node, so we match on name
     // without checking path (any structurally-valid propertyChanged carrying
     // one of these names lands here).
-    if NetworkParam::from_name(name).is_known() {
+    if let Some(param) = NetworkParam::from_known_name(name) {
         if let Some(value) = value {
-            return DeviceEvent::NetworkParamChanged {
-                param: NetworkParam::from_name(name),
-                value,
-            };
+            return DeviceEvent::NetworkParamChanged { param, value };
         }
     }
 
     // RECORDINGS singleton (path.len() == 1).
-    if path.len() == 1 && RecordingsParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::RecordingsParamChanged {
-                param: RecordingsParam::from_name(name),
-                value,
-            };
+    if path.len() == 1 {
+        if let Some(param) = RecordingsParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::RecordingsParamChanged { param, value };
+            }
         }
     }
 
     // RECORDING children (path.len() == 2). path[1] is the child index within
     // the RECORDINGS container.
-    if path.len() == 2 && RecordingParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::RecordingParamChanged {
-                recording: path[1] as u8,
-                param: RecordingParam::from_name(name),
-                value,
-            };
+    if path.len() == 2 {
+        if let Some(param) = RecordingParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::RecordingParamChanged {
+                    recording: path[1] as u8,
+                    param,
+                    value,
+                };
+            }
+        }
+
+        // STORAGEVOLUME children (path.len() == 2). path[1] is the volume index.
+        if let Some(param) = StorageVolumeParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::StorageVolumeParamChanged {
+                    volume: path[1] as u8,
+                    param,
+                    value,
+                };
+            }
         }
     }
 
-    // STORAGEVOLUME children (path.len() == 2). path[1] is the volume index.
-    if path.len() == 2 && StorageVolumeParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::StorageVolumeParamChanged {
-                volume: path[1] as u8,
-                param: StorageVolumeParam::from_name(name),
-                value,
-            };
+    // Path-length-1 singletons: property names are unique to each family.
+    if path.len() == 1 {
+        if let Some(param) = AudioParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::AudioParamChanged { param, value };
+            }
+        }
+        if let Some(param) = BuildParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::BuildParamChanged { param, value };
+            }
+        }
+        if let Some(param) = AppParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::AppParamChanged { param, value };
+            }
+        }
+        if let Some(param) = ThemeParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::ThemeParamChanged { param, value };
+            }
+        }
+        if let Some(param) = CurrentShowParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::CurrentShowParamChanged { param, value };
+            }
+        }
+        if let Some(param) = ShowControlParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::ShowControlParamChanged { param, value };
+            }
         }
     }
 
-    // AUDIO singleton (path.len() == 1). Property names are all `audio*`,
-    // `activeStreamerX*`, `rcSync*`: unique to this node.
-    if path.len() == 1 && AudioParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::AudioParamChanged {
-                param: AudioParam::from_name(name),
-                value,
-            };
+    // Path-length-2 children under SHOWS and METER containers.
+    if path.len() == 2 {
+        if let Some(param) = ShowParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::ShowParamChanged {
+                    show: path[1] as u8,
+                    param,
+                    value,
+                };
+            }
         }
-    }
 
-    // BUILD singleton: property names all start with `build*`.
-    if path.len() == 1 && BuildParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::BuildParamChanged {
-                param: BuildParam::from_name(name),
-                value,
-            };
-        }
-    }
-
-    // APP singleton: property names all start with `app*`.
-    if path.len() == 1 && AppParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::AppParamChanged {
-                param: AppParam::from_name(name),
-                value,
-            };
-        }
-    }
-
-    // THEME singleton: one property `themeId`.
-    if path.len() == 1 && ThemeParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::ThemeParamChanged {
-                param: ThemeParam::from_name(name),
-                value,
-            };
-        }
-    }
-
-    // CURRENTSHOW singleton: property names all start with `currentShow*`.
-    if path.len() == 1 && CurrentShowParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::CurrentShowParamChanged {
-                param: CurrentShowParam::from_name(name),
-                value,
-            };
-        }
-    }
-
-    // SHOWCONTROL singleton: property names all start with `showControl*`.
-    if path.len() == 1 && ShowControlParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::ShowControlParamChanged {
-                param: ShowControlParam::from_name(name),
-                value,
-            };
-        }
-    }
-
-    // SHOW children under SHOWS container (path.len() == 2). path[1] is the
-    // show index. Note: SHOW's property names (`showIcon`/`showName`/...)
-    // don't clash with SHOWCONTROL's (`showControl*`) or CURRENTSHOW's
-    // (`currentShow*`), so the name-based match is unambiguous.
-    if path.len() == 2 && ShowParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::ShowParamChanged {
-                show: path[1] as u8,
-                param: ShowParam::from_name(name),
-                value,
-            };
-        }
-    }
-
-    // METER children (path.len() == 2). Property names include the shared
-    // `faderLevel`, but the path distinguishes: METER lives under a different
-    // parent than FADER (which lives under PHYSICALINTERFACE and is handled
-    // above), so this branch only fires for non-FADER-path `faderLevel` writes.
-    if path.len() == 2
-        && path[0] != layout.physical_interface_idx()
-        && MeterParam::from_name(name).is_known()
-    {
-        if let Some(value) = value {
-            return DeviceEvent::MeterParamChanged {
-                meter: path[1] as u8,
-                param: MeterParam::from_name(name),
-                value,
-            };
+        if path[0] != layout.physical_interface_idx() {
+            if let Some(param) = MeterParam::from_known_name(name) {
+                if let Some(value) = value {
+                    return DeviceEvent::MeterParamChanged {
+                        meter: path[1] as u8,
+                        param,
+                        value,
+                    };
+                }
+            }
         }
     }
 
     // SIPCALLING singleton (path.len() == 1, layout-resolved position).
-    if layout.is_sip_calling_path(path) && SipCallingParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::SipCallingParamChanged {
-                param: SipCallingParam::from_name(name),
-                value,
-            };
+    if layout.is_sip_calling_path(path) {
+        if let Some(param) = SipCallingParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::SipCallingParamChanged { param, value };
+            }
         }
     }
 
     // SIPADVANCED singleton.
-    if layout.is_sip_advanced_path(path) && SipAdvancedParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::SipAdvancedParamChanged {
-                param: SipAdvancedParam::from_name(name),
-                value,
-            };
+    if layout.is_sip_advanced_path(path) {
+        if let Some(param) = SipAdvancedParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::SipAdvancedParamChanged { param, value };
+            }
         }
     }
 
     // SIPREGISTRATION per-instance under SIPCALLING.
     if let Some(reg) = layout.sip_registration_index_from_path(path) {
-        if SipRegistrationParam::from_name(name).is_known() {
+        if let Some(param) = SipRegistrationParam::from_known_name(name) {
             if let Some(value) = value {
                 return DeviceEvent::SipRegistrationParamChanged {
                     registration: reg,
-                    param: SipRegistrationParam::from_name(name),
+                    param,
                     value,
                 };
             }
@@ -751,13 +754,9 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
 
     // SIPCALLSLOTS per-slot at root.
     if let Some(slot) = layout.sip_call_slots_index_from_path(path) {
-        if SipCallSlotsParam::from_name(name).is_known() {
+        if let Some(param) = SipCallSlotsParam::from_known_name(name) {
             if let Some(value) = value {
-                return DeviceEvent::SipCallSlotsParamChanged {
-                    slot,
-                    param: SipCallSlotsParam::from_name(name),
-                    value,
-                };
+                return DeviceEvent::SipCallSlotsParamChanged { slot, param, value };
             }
         }
     }
@@ -767,99 +766,84 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     // name; per-instance families take path.last() as the ordinal (no
     // layout resolution: the path itself carries enough context).
 
-    if StreamerXMixPresetParam::from_name(name).is_known() {
+    if let Some(param) = StreamerXMixPresetParam::from_known_name(name) {
         if let Some(value) = value {
             let preset = path.last().copied().unwrap_or(0) as u8;
             return DeviceEvent::StreamerXMixPresetParamChanged {
                 preset,
-                param: StreamerXMixPresetParam::from_name(name),
+                param,
                 value,
             };
         }
     }
-    if StreamerXStreamMixParam::from_name(name).is_known() {
+    if let Some(param) = StreamerXStreamMixParam::from_known_name(name) {
         if let Some(value) = value {
             let stream = path.last().copied().unwrap_or(0) as u8;
             return DeviceEvent::StreamerXStreamMixParamChanged {
                 stream,
-                param: StreamerXStreamMixParam::from_name(name),
+                param,
                 value,
             };
         }
     }
-    if FxPresetParam::from_name(name).is_known() {
+    if let Some(param) = FxPresetParam::from_known_name(name) {
         if let Some(value) = value {
             let preset = path.last().copied().unwrap_or(0) as u8;
             return DeviceEvent::FxPresetParamChanged {
                 preset,
-                param: FxPresetParam::from_name(name),
+                param,
                 value,
             };
         }
     }
-    if PadRecorderParam::from_name(name).is_known() {
+    if let Some(param) = PadRecorderParam::from_known_name(name) {
         if let Some(value) = value {
             let pad_recorder = path.last().copied().unwrap_or(0) as u8;
             return DeviceEvent::PadRecorderParamChanged {
                 pad_recorder,
-                param: PadRecorderParam::from_name(name),
+                param,
                 value,
             };
         }
     }
-    if TestParam::from_name(name).is_known() {
+    if let Some(param) = TestParam::from_known_name(name) {
         if let Some(value) = value {
-            return DeviceEvent::TestParamChanged {
-                param: TestParam::from_name(name),
-                value,
-            };
+            return DeviceEvent::TestParamChanged { param, value };
         }
     }
-    if WifiScanResultParam::from_name(name).is_known() {
+    if let Some(param) = WifiScanResultParam::from_known_name(name) {
         if let Some(value) = value {
             // Path shape is [network_root_idx, scan_slot]; slot is path.last().
             let slot = path.last().copied().unwrap_or(0) as u8;
-            return DeviceEvent::WifiScanResultChanged {
-                slot,
-                param: WifiScanResultParam::from_name(name),
-                value,
-            };
+            return DeviceEvent::WifiScanResultChanged { slot, param, value };
         }
     }
-    if RadioParam::from_name(name).is_known() {
+    if let Some(param) = RadioParam::from_known_name(name) {
         if let Some(value) = value {
-            return DeviceEvent::RadioParamChanged {
-                param: RadioParam::from_name(name),
-                value,
-            };
+            return DeviceEvent::RadioParamChanged { param, value };
         }
     }
-    if RadioTxParam::from_name(name).is_known() {
+    if let Some(param) = RadioTxParam::from_known_name(name) {
         if let Some(value) = value {
             let tx = path.last().copied().unwrap_or(0) as u8;
-            return DeviceEvent::RadioTxParamChanged {
-                tx,
-                param: RadioTxParam::from_name(name),
-                value,
-            };
+            return DeviceEvent::RadioTxParamChanged { tx, param, value };
         }
     }
-    if RadioRxParam::from_name(name).is_known() {
+    if let Some(param) = RadioRxParam::from_known_name(name) {
         if let Some(value) = value {
             let rx = path.last().copied().unwrap_or(0) as u8;
-            return DeviceEvent::RadioRxParamChanged {
-                rx,
-                param: RadioRxParam::from_name(name),
-                value,
-            };
+            return DeviceEvent::RadioRxParamChanged { rx, param, value };
         }
     }
-    if MixMinusesParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::MixMinusesParamChanged {
-                param: MixMinusesParam::from_name(name),
-                value,
-            };
+    if let Some(minuses) = layout.mix_minuses_index_from_path(path) {
+        if let Some(param) = MixMinusesParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::MixMinusesParamChanged {
+                    minuses,
+                    param,
+                    value,
+                };
+            }
         }
     }
     // RcSyncMixParam shares six wire names with the regular MIX cell family
@@ -868,12 +852,11 @@ fn decode_property(path: &[u32], name: &str, value: Option<Value>, layout: &Layo
     // discovered `first_mix + source*13 + mix` run; anything outside that run
     // that still carries these names lands here. The seventh property
     // (`mixRcSyncLevelRequest`) is unique to RCSYNCMIX.
-    if RcSyncMixParam::from_name(name).is_known() {
-        if let Some(value) = value {
-            return DeviceEvent::RcSyncMixParamChanged {
-                param: RcSyncMixParam::from_name(name),
-                value,
-            };
+    if let Some(mix) = layout.rcsync_mix_index_from_path(path) {
+        if let Some(param) = RcSyncMixParam::from_known_name(name) {
+            if let Some(value) = value {
+                return DeviceEvent::RcSyncMixParamChanged { mix, param, value };
+            }
         }
     }
 
@@ -1051,8 +1034,7 @@ fn parse_mix_level(s: &str) -> Option<(f32, f32)> {
     Some((anchor, value))
 }
 
-/// Walk a parsed fullSync and produce the initial DeviceEvent list. Mirrors
-/// the server's `extract_initial_state`, layout-driven (no hardcoded counts).
+/// Walk a parsed fullSync tree and extract the initial device state as a list of [`DeviceEvent`]s.
 pub fn extract_initial_state(root: &Node, layout: &Layout) -> Vec<DeviceEvent> {
     let mut out = Vec::new();
     let model = layout.model();

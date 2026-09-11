@@ -1,8 +1,6 @@
 //! StreamerX-integration parameter families: [`StreamerXMixPresetParam`]
 //! (per-preset) and [`StreamerXStreamMixParam`] (per-stream).
 
-use std::fmt;
-
 // STREAMERXMIXPRESET nodes carry two properties per preset (confirmed from
 // capture, firmware 1.7.3): a creation-status flag and the preset name.
 wire_param_enum! {

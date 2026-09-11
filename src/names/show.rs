@@ -2,8 +2,6 @@
 //! (the loaded show), and [`ShowControlParam`] (the show-lifecycle command
 //! channel).
 
-use std::fmt;
-
 // The seven properties each SHOW node carries under the SHOWS container
 // (confirmed from capture, firmware 1.7.3): identity (name / UID / UUID),
 // storage location, snapshot index, an icon, and a modification timestamp.

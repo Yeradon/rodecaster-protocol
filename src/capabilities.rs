@@ -7,6 +7,9 @@
 //! the wire protocol but differ in physical surfaces and channel counts.
 //! Inspecting [`DeviceCapabilities`] allows applications to adapt to either console
 //! dynamically rather than hardcoding model-specific assumptions.
+
+use crate::{DeviceModel, Fader, Layout, MixOutput, Node, Source, Value};
+
 /// Addressable controls and family counts exposed by one connected device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCapabilities {
@@ -96,6 +99,24 @@ impl DeviceCapabilities {
         self.headphone_count
     }
 
+    /// Physical analog combo XLR preamp jack count on the physical device:
+    /// 2 on Duo, 4 on Pro II.
+    pub fn physical_combo_count(&self) -> u8 {
+        match self.model {
+            DeviceModel::Duo => 2,
+            DeviceModel::Pro2 => 4,
+        }
+    }
+
+    /// Physical headphone output jack count on the physical device:
+    /// 2 on Duo, 4 on Pro II.
+    pub fn physical_headphone_count(&self) -> u8 {
+        match self.model {
+            DeviceModel::Duo => 2,
+            DeviceModel::Pro2 => 4,
+        }
+    }
+
     pub fn effects_count(&self) -> u8 {
         self.effects_count
     }
@@ -146,4 +167,37 @@ fn find_string_property<'a>(node: &'a Node, name: &str) -> Option<&'a str> {
                 .iter()
                 .find_map(|child| find_string_property(child, name))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn physical_jack_counts_match_hardware() {
+        let duo_caps = DeviceCapabilities {
+            model: DeviceModel::Duo,
+            firmware: None,
+            faders: vec![],
+            sources: vec![],
+            mix_outputs: vec![],
+            channel_count: 10,
+            input_source_count: 19,
+            headphone_count: 4,
+            effects_count: 11,
+            pad_count: 21,
+            sip_call_slots_count: 3,
+            sip_registration_count: 2,
+            is_in_setup: false,
+        };
+        assert_eq!(duo_caps.physical_combo_count(), 2);
+        assert_eq!(duo_caps.physical_headphone_count(), 2);
+
+        let pro2_caps = DeviceCapabilities {
+            model: DeviceModel::Pro2,
+            ..duo_caps
+        };
+        assert_eq!(pro2_caps.physical_combo_count(), 4);
+        assert_eq!(pro2_caps.physical_headphone_count(), 4);
+    }
 }

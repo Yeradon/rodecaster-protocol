@@ -7,8 +7,6 @@
 //! only. The firmware misspells `RCSYNCMIXMINUES` (should be `MINUSES`);
 //! preserved verbatim in the node-name check.
 
-use std::fmt;
-
 wire_param_enum! {
     /// A mix-minus parameter: the one flat property on both `MIXMINUSES` and
     /// `RCSYNCMIXMINUES` nodes. Mix-minus routing produces a per-output

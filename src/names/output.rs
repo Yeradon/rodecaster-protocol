@@ -1,7 +1,5 @@
 //! [`OutputParam`]: the singleton `OUTPUT`-node parameter family.
 
-use std::fmt;
-
 // The fifteen properties a real Pro II / Duo fullSync carries on the single
 // OUTPUT node (confirmed from capture, firmware 1.7.3): monitor (speaker) and
 // Bluetooth output levels/mutes, the multi-out mode, and the recording-bus

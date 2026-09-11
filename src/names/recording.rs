@@ -1,8 +1,6 @@
 //! [`RecordingsParam`] + [`RecordingParam`]: the recordings container + per-
 //! recording parameter families.
 
-use std::fmt;
-
 // The three properties a real Pro II / Duo fullSync carries on the singleton
 // RECORDINGS container node (confirmed from capture, firmware 1.7.3): summary
 // counts + a request-to-delete command channel.

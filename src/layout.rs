@@ -1,26 +1,16 @@
-//! Runtime device-layout discovery from a parsed fullSync.
+//! Dynamic device topology discovery and address translation.
 //!
-//! Where the addressable node families (`PHYSICALINTERFACE`, `FADER`,
-//! `CHANNEL`, `MIX`) sit inside the fullSync tree is **per-device,
-//! per-firmware**. The crate must not hardcode positions. [`Layout`] walks the
-//! parsed tree by node name at connect time and records the discovered
-//! positions; encoders and decoders translate logical addresses (fader index,
-//! mix cell) through it.
+//! RØDECaster devices do not use fixed, static wire addresses across models
+//! and firmware versions. Instead, the console sends a full state tree
+//! (`fullSync`) when connected.
 //!
-//! Build once per connection from a fullSync; replace the whole value on
-//! resync. Plain immutable data, `Send + Sync` automatic.
+//! [`Layout`] inspects this tree to discover where physical faders, channels,
+//! audio inputs, and mix routing nodes reside. High-level commands and events
+//! use [`Layout`] to translate between human-readable domain names (such as
+//! [`crate::Fader::Physical1`]) and the exact numeric node indices on the wire.
 //!
-//! ## Addressing shapes
-//!
-//! Every node family reduces to one of three reusable shapes, so the per-family
-//! path math is written once each and the [`Layout`] methods just delegate:
-//!
-//! - `Singleton`: one node, no index (`MASTERCHANNEL`, `OUTPUT`, `DUCKER`, ...).
-//! - `Indexed`: a single-level run at root (`CHANNEL`, `INPUTSOURCE`, ...).
-//! - `TwoLevel`: a run of children under a container (`FADER`, `PAD`).
-//!
-//! `MIX` is the one exception: it is a 2D source-major matrix with stride
-//! arithmetic, so it keeps bespoke methods rather than a shared shape.
+//! Most applications do not need to construct or query [`Layout`] directly:
+//! [`crate::ProtocolSession`] manages the active layout automatically.
 
 use crate::juce_var::Value;
 use crate::names::DeviceModel;

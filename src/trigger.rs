@@ -4,26 +4,13 @@
 //! `mixLinkRequest`, `mixUnlinkRequest`, `padProgressRequestSignal`, and
 //! `sipSlotCallDisconnect`) follow a momentary button-pulse pattern.
 //!
-//! In JUCE UI architecture, button interactions are governed by two boolean
-//! flags: `isDown` (button actively pressed down) and `isOver` (pointer or
-//! touch focused over the button). When a user taps a virtual button:
-//! 1. Touch Down: both `isDown` and `isOver` are asserted -> `(true, true)`
-//! 2. Touch Up / Reset: both are released -> `(false, false)`
+//! On the wire, these properties encode two serialized booleans:
+//! - Press (asserted): `(true, true)` -> `[0x01, 0x01, 0x02, 0x01, 0x01, 0x02]`
+//! - Release (idle): `(false, false)` -> `[0x01, 0x01, 0x03, 0x01, 0x01, 0x03]`
 //!
-//! On the wire, JUCE ValueTree frames this property as a `Binary` (tag `0x08`)
-//! containing two consecutive serialized `juce::var::Bool` values:
-//!
-//! - Press (touch-down / asserted): `(true, true)` -> `[0x01, 0x01, 0x02, 0x01, 0x01, 0x02]`
-//! - Release (touch-up / idle): `(false, false)` -> `[0x01, 0x01, 0x03, 0x01, 0x01, 0x03]`
-//!
-//! Each serialized boolean follows standard JUCE encoding:
-//! - `0x01, 0x01`: `writeCompressedInt(1)` (1 payload byte follows)
-//! - `0x02` / `0x03`: `varMarker_BoolTrue` (`0x02`) or `varMarker_BoolFalse` (`0x03`)
-//!
-//! On physical touchscreen interactions, the hardware emits two consecutive events:
-//! [`TriggerPhase::Press`] on touch-down, followed by [`TriggerPhase::Release`] on
-//! touch-up. When commanded over USB or TCP, the client asserts `Press`, and the
-//! firmware executes the action and resets the property with a `Release` echo.
+//! Physical interactions emit [`TriggerPhase::Press`] on touch-down and
+//! [`TriggerPhase::Release`] on touch-up. Commands assert `Press`, and the
+//! device resets the property with a `Release` acknowledgment.
 
 use crate::juce_var::{marker, Value};
 
@@ -48,12 +35,6 @@ pub const PRESS_BYTES: [u8; 6] = bool_pair(true, true);
 /// The 6-byte trigger payload when releasing / idle: `(false, false)`.
 pub const RELEASE_BYTES: [u8; 6] = bool_pair(false, false);
 
-/// Alias for [`PRESS_BYTES`].
-pub const REQUEST_BYTES: [u8; 6] = PRESS_BYTES;
-
-/// Alias for [`RELEASE_BYTES`].
-pub const ACK_BYTES: [u8; 6] = RELEASE_BYTES;
-
 /// Build a `Value::Binary` containing the `(true, true)` press payload.
 pub fn press_value() -> Value {
     Value::Binary(PRESS_BYTES.to_vec())
@@ -62,16 +43,6 @@ pub fn press_value() -> Value {
 /// Build a `Value::Binary` containing the `(false, false)` release payload.
 pub fn release_value() -> Value {
     Value::Binary(RELEASE_BYTES.to_vec())
-}
-
-/// Alias for [`press_value`].
-pub fn request_value() -> Value {
-    press_value()
-}
-
-/// Alias for [`release_value`].
-pub fn ack_value() -> Value {
-    release_value()
 }
 
 /// Decode a 6-byte payload into its two boolean values.
@@ -106,14 +77,6 @@ pub enum TriggerPhase {
     Release,
 }
 
-#[allow(non_upper_case_globals)]
-impl TriggerPhase {
-    /// Legacy alias for [`TriggerPhase::Press`].
-    pub const ClientTrigger: Self = Self::Press;
-    /// Legacy alias for [`TriggerPhase::Release`].
-    pub const DeviceAck: Self = Self::Release;
-}
-
 /// Backward-compatible type alias for [`TriggerPhase`].
 pub type TriggerOrigin = TriggerPhase;
 
@@ -131,11 +94,6 @@ pub fn decode_phase(value: &Value) -> Option<TriggerPhase> {
     } else {
         Some(TriggerPhase::Release)
     }
-}
-
-/// Backward-compatible alias for [`decode_phase`].
-pub fn decode_origin(value: &Value) -> Option<TriggerPhase> {
-    decode_phase(value)
 }
 
 #[cfg(test)]
@@ -168,16 +126,5 @@ mod tests {
         assert_eq!(decode_phase(&release_value()), Some(TriggerPhase::Release));
         assert_eq!(decode_phase(&Value::Binary(vec![0x01, 0x01, 0x02])), None);
         assert_eq!(decode_phase(&Value::Bool(true)), None);
-    }
-
-    #[test]
-    fn backwards_compatible_aliases() {
-        assert_eq!(TriggerOrigin::ClientTrigger, TriggerPhase::Press);
-        assert_eq!(TriggerOrigin::DeviceAck, TriggerPhase::Release);
-        assert_eq!(
-            decode_origin(&request_value()),
-            Some(TriggerOrigin::ClientTrigger)
-        );
-        assert_eq!(decode_origin(&ack_value()), Some(TriggerOrigin::DeviceAck));
     }
 }

@@ -1,7 +1,5 @@
 //! [`RecorderParam`]: the singleton `RECORDER`-node parameter family.
 
-use std::fmt;
-
 // The five properties a real Pro II / Duo fullSync carries on the single
 // RECORDER node (confirmed from capture, firmware 1.7.3): the multitrack
 // recorder's transport state and the request-to-change-state command channel.

@@ -9,8 +9,6 @@
 //! `sipSlotCallBitrate`, `sipSlotCallPacketLoss`) are device-managed
 //! read-back only.
 
-use std::fmt;
-
 // SIPCALLING node (fourteen properties, plus SIPREGISTRATION sub-nodes).
 // Singleton at root; the device presents itself via `sipRodeCode`, tracks
 // remaining calltime, and hosts + accepts + emits call setup metadata here.

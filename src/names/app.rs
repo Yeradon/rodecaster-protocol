@@ -1,7 +1,5 @@
 //! [`AppParam`]: the singleton `APP`-node parameter family.
 
-use std::fmt;
-
 // The four properties a real Pro II / Duo fullSync carries on the single APP
 // node (confirmed from capture, firmware 1.7.3): companion-app-mode flags.
 // These reflect the device's understanding of the RODE Connect app's current

@@ -1,7 +1,5 @@
 //! [`PadRecorderParam`]: per-`PADRECORDER`-node parameter family.
 
-use std::fmt;
-
 // PADRECORDER nodes carry six properties per pad (confirmed from capture,
 // firmware 1.7.3). Read-back state (Idx / State / Seconds / MemoryFull)
 // plus command channels (StateRequest / Clear).

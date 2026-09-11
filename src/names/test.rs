@@ -1,7 +1,5 @@
 //! [`TestParam`]: the singleton `TEST`-node parameter family.
 
-use std::fmt;
-
 // The two properties the TEST node carries (confirmed from capture, firmware
 // 1.7.3). Diagnostic / factory-test channels: writing `AllLedsWhite` turns
 // every front-panel LED white for hardware inspection; `ToneGeneration`

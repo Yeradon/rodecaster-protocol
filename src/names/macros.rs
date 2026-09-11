@@ -1,22 +1,9 @@
-//! The `wire_param_enum!` macro: one list generates a typed wire-property enum
-//! plus its name <-> variant codec, shared by every node-scoped property family.
+//! The `wire_param_enum!` macro for generating typed parameter enums.
 
-/// Generate a typed wire-property enum plus its name <-> variant codec from one
-/// list, so `from_name` and `as_str` can never drift apart. Each entry is
-/// `Variant => "wireName"`.
+/// Generate a typed wire-property enum with `from_known_name`, `from_name`,
+/// `as_str`, and `Display`.
 ///
-/// Every generated enum is `#[non_exhaustive]`, carries an `Other(String)`
-/// escape hatch (a property the crate does not yet name surfaces there rather
-/// than being dropped, so forward-compatibility is total), and implements
-/// [`fmt::Display`] as its wire name. Each variant is a **ground-truth wire
-/// name** (the literal JUCE property identifier the firmware uses), not a guess.
-/// The *value* of a parameter is carried separately as a self-describing
-/// [`crate::Value`], so this enum never has to encode a per-parameter type that
-/// could be wrong. The caller supplies the enum's own doc comment.
-///
-/// One macro spans every node-scoped property family ([`ChannelParam`],
-/// [`InputSourceParam`], [`MasterParam`], [`OutputParam`], ...): the families
-/// address different nodes but share an identical name-codec shape.
+/// Unknown names are captured by the `Other(String)` variant for forward compatibility.
 macro_rules! wire_param_enum {
     (
         $(#[$enum_doc:meta])*
@@ -38,14 +25,30 @@ macro_rules! wire_param_enum {
         impl $Name {
             #[doc = concat!(
                 "Map a wire property name to its typed [`", stringify!($Name),
+                "`] variant if known, without allocating."
+            )]
+            pub fn from_known_name(name: &str) -> Option<$Name> {
+                match name {
+                    $($wire => Some($Name::$variant),)+
+                    _ => None,
+                }
+            }
+
+            #[doc = concat!(
+                "Check if a wire property name matches a known [`", stringify!($Name),
+                "`] variant without allocating."
+            )]
+            pub fn is_known_name(name: &str) -> bool {
+                Self::from_known_name(name).is_some()
+            }
+
+            #[doc = concat!(
+                "Map a wire property name to its typed [`", stringify!($Name),
                 "`] variant. Unknown names map to [`", stringify!($Name),
                 "::Other`], so this is total (never fails)."
             )]
             pub fn from_name(name: &str) -> $Name {
-                match name {
-                    $($wire => $Name::$variant,)+
-                    other => $Name::Other(other.to_string()),
-                }
+                Self::from_known_name(name).unwrap_or_else(|| $Name::Other(name.to_string()))
             }
 
             #[doc = concat!(
@@ -68,10 +71,48 @@ macro_rules! wire_param_enum {
             }
         }
 
-        impl fmt::Display for $Name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::core::fmt::Display for $Name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.write_str(self.as_str())
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    wire_param_enum! {
+        /// Test parameter family.
+        DummyParam {
+            Alpha => "alphaProp",
+            Beta => "betaProp",
+        }
+    }
+
+    #[test]
+    fn from_known_name_and_is_known() {
+        assert_eq!(
+            DummyParam::from_known_name("alphaProp"),
+            Some(DummyParam::Alpha)
+        );
+        assert_eq!(
+            DummyParam::from_known_name("betaProp"),
+            Some(DummyParam::Beta)
+        );
+        assert_eq!(DummyParam::from_known_name("unknownProp"), None);
+
+        assert!(DummyParam::is_known_name("alphaProp"));
+        assert!(DummyParam::is_known_name("betaProp"));
+        assert!(!DummyParam::is_known_name("unknownProp"));
+
+        assert_eq!(DummyParam::from_name("alphaProp"), DummyParam::Alpha);
+        assert_eq!(
+            DummyParam::from_name("unknownProp"),
+            DummyParam::Other("unknownProp".to_string())
+        );
+        assert!(DummyParam::Alpha.is_known());
+        assert!(!DummyParam::Other("unknownProp".to_string()).is_known());
+        assert_eq!(DummyParam::Alpha.as_str(), "alphaProp");
+        assert_eq!(DummyParam::Alpha.to_string(), "alphaProp");
+    }
 }

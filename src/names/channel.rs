@@ -1,7 +1,5 @@
 //! [`ChannelParam`]: the per-fader `CHANNEL`-node parameter family.
 
-use std::fmt;
-
 wire_param_enum! {
     /// A per-channel-strip parameter: one of the flat properties the device
     /// carries on a `CHANNEL` node (the EQ, dynamics, HPF, aphex, pan and tone

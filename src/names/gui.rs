@@ -1,7 +1,5 @@
 //! [`GuiParam`]: the singleton root `GUI`-node front-panel UI-state family.
 
-use std::fmt;
-
 // The fourteen properties a real Pro II / Duo fullSync carries on the single
 // root-level GUI node (confirmed from capture, firmware 1.7.3). GUI is the
 // front-panel / touchscreen UI-state singleton: display + button brightness,

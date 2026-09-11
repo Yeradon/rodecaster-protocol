@@ -1,7 +1,5 @@
 //! [`SystemParam`]: the singleton root `SYSTEM`-node device-state family.
 
-use std::fmt;
-
 // The forty-nine properties a real Pro II / Duo fullSync carries on the single
 // root-level SYSTEM node (confirmed from capture, firmware 1.7.3). SYSTEM is the
 // device-wide state singleton: identity (serial, firmware, board type), the

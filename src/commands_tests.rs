@@ -1,6 +1,6 @@
 use super::*;
 use crate::change_frame::{decode, ChangeFrame};
-use crate::test_fixtures::{layout, minimal_layout};
+use crate::test_fixtures::{layout, minimal_layout, n, nc};
 use crate::valuetree::Node;
 
 fn decode_single_prop(bytes: &[u8]) -> (Vec<u32>, String, Value) {
@@ -94,6 +94,28 @@ fn set_mix_disabled_addresses_source_major_cell() {
             assert_eq!(path, l.mix_cell_path(1, 5).unwrap());
             assert_eq!(name, "mixDisabled");
             assert_eq!(value, Value::Bool(true));
+        }
+        _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
+fn set_mix_level_addresses_source_major_cell() {
+    let l = layout();
+    let bytes = Command::SetMixLevel {
+        source: Source::Combo2,    // protocol index 1
+        mix: MixOutput::Recording, // protocol index 5
+        anchor: 0.4,
+        value: 0.9,
+    }
+    .encode(&l)
+    .unwrap();
+    let frame = decode(&bytes[0]).unwrap();
+    match frame {
+        ChangeFrame::PropertyChanged { path, name, value } => {
+            assert_eq!(path, l.mix_cell_path(1, 5).unwrap());
+            assert_eq!(name, "mixLevelWithAnchor");
+            assert_eq!(value, Value::String("0.4|0.9".to_string()));
         }
         _ => panic!("wrong variant"),
     }
@@ -802,21 +824,6 @@ fn out_of_range_mix_cell_returns_error_not_panic() {
 /// differ. Proves Command::encode is layout-driven, not constant-driven.
 #[test]
 fn encoding_depends_on_layout_not_constants() {
-    fn n(name: &str) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children: vec![],
-        }
-    }
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-
     // Tree A: CHANNEL at root index 3.
     let phys = nc("PHYSICALINTERFACE", vec![n("FADER"), n("FADER")]);
     let mut a_children = vec![phys.clone(), n("X"), n("Y"), n("CHANNEL"), n("CHANNEL")];
@@ -932,21 +939,6 @@ fn unlink_callme_golden_bytes() {
 
 #[test]
 fn set_remaining_param_families_encode_cleanly() {
-    fn n(name: &str) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children: vec![],
-        }
-    }
-    fn nc(name: &str, children: Vec<Node>) -> Node {
-        Node {
-            name: name.to_string(),
-            properties: vec![],
-            children,
-        }
-    }
-
     let phys = nc("PHYSICALINTERFACE", vec![n("FADER")]);
     let mut children = vec![phys, n("CHANNEL")];
     for _ in 0..13 {
@@ -993,4 +985,18 @@ fn set_remaining_param_families_encode_cleanly() {
         value: Value::String("Test".to_string()),
     };
     assert_eq!(cmd_show.encode(&l).unwrap().len(), 1);
+
+    let cmd_rcsync = Command::SetRcSyncMixParam {
+        mix: 0,
+        param: RcSyncMixParam::MixMute,
+        value: Value::Bool(true),
+    };
+    assert_eq!(cmd_rcsync.encode(&l).unwrap().len(), 1);
+
+    let cmd_mix_minuses = Command::SetMixMinusesParam {
+        minuses: 0,
+        param: MixMinusesParam::OutputMixMinus,
+        value: Value::Bool(true),
+    };
+    assert_eq!(cmd_mix_minuses.encode(&l).unwrap().len(), 1);
 }

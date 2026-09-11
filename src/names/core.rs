@@ -141,8 +141,24 @@ impl MixOutput {
     }
 }
 
+/// Error returned when parsing an invalid mix output name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseMixOutputError(pub String);
+
+impl fmt::Display for ParseMixOutputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown mix output: {} (try: hp1, speaker, bt, cm1)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseMixOutputError {}
+
 impl FromStr for MixOutput {
-    type Err = String;
+    type Err = ParseMixOutputError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "headphone1" | "hp1" => Ok(Self::Headphone1),
@@ -158,9 +174,7 @@ impl FromStr for MixOutput {
             "callme1" | "cm1" => Ok(Self::CallMe1),
             "callme2" | "cm2" => Ok(Self::CallMe2),
             "callme3" | "cm3" => Ok(Self::CallMe3),
-            _ => Err(format!(
-                "unknown mix output: {s} (try: hp1, speaker, bt, cm1)"
-            )),
+            _ => Err(ParseMixOutputError(s.to_string())),
         }
     }
 }
@@ -300,8 +314,20 @@ impl Source {
     }
 }
 
+/// Error returned when parsing an invalid input source name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseSourceError(pub String);
+
+impl fmt::Display for ParseSourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown source: {} (try: combo1, bt, game, cm1)", self.0)
+    }
+}
+
+impl std::error::Error for ParseSourceError {}
+
 impl FromStr for Source {
-    type Err = String;
+    type Err = ParseSourceError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let clean = s.to_lowercase().replace([' ', '_', '-'], "");
         match clean.as_str() {
@@ -324,7 +350,7 @@ impl FromStr for Source {
             "callme1" | "cm1" | "caller1" => Ok(Self::CallMe1),
             "callme2" | "cm2" | "caller2" => Ok(Self::CallMe2),
             "callme3" | "cm3" | "caller3" => Ok(Self::CallMe3),
-            _ => Err(format!("unknown source: {s} (try: combo1, bt, game, cm1)")),
+            _ => Err(ParseSourceError(s.to_string())),
         }
     }
 }
@@ -441,8 +467,8 @@ impl Fader {
         })
     }
 
-    /// `true` if this strip is a hardware fader on `model` (driven by the motor
-    /// fader over MIDI/UART), as opposed to a virtual strip set in software.
+    /// `true` if this strip corresponds to a physical analog slide potentiometer
+    /// on `model`, as opposed to a virtual fader strip adjusted in software.
     pub fn is_physical(self, model: DeviceModel) -> bool {
         use DeviceModel::{Duo, Pro2};
         use Fader::*;
@@ -473,8 +499,20 @@ impl Fader {
     }
 }
 
+/// Error returned when parsing an invalid fader name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseFaderError(pub String);
+
+impl fmt::Display for ParseFaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown fader: {} (try: p1, fader1, v1)", self.0)
+    }
+}
+
+impl std::error::Error for ParseFaderError {}
+
 impl FromStr for Fader {
-    type Err = String;
+    type Err = ParseFaderError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "physical1" | "p1" | "fader1" => Ok(Self::Physical1),
@@ -488,7 +526,7 @@ impl FromStr for Fader {
             "virtual3" | "v3" | "vfader3" => Ok(Self::Virtual3),
             "virtual4" | "v4" | "vfader4" => Ok(Self::Virtual4),
             "virtual5" | "v5" | "vfader5" => Ok(Self::Virtual5),
-            _ => Err(format!("unknown fader: {s} (try: p1, fader1, v1)")),
+            _ => Err(ParseFaderError(s.to_string())),
         }
     }
 }
@@ -651,6 +689,26 @@ mod tests {
         assert_eq!("p1".parse::<Fader>(), Ok(Fader::Physical1));
         assert_eq!("fader4".parse::<Fader>(), Ok(Fader::Physical4));
         assert_eq!("v5".parse::<Fader>(), Ok(Fader::Virtual5));
-        assert!("nonsense".parse::<Source>().is_err());
+
+        let err_src = "nonsense".parse::<Source>().unwrap_err();
+        assert_eq!(err_src, ParseSourceError("nonsense".to_string()));
+        assert_eq!(
+            err_src.to_string(),
+            "unknown source: nonsense (try: combo1, bt, game, cm1)"
+        );
+
+        let err_mix = "nonsense".parse::<MixOutput>().unwrap_err();
+        assert_eq!(err_mix, ParseMixOutputError("nonsense".to_string()));
+        assert_eq!(
+            err_mix.to_string(),
+            "unknown mix output: nonsense (try: hp1, speaker, bt, cm1)"
+        );
+
+        let err_fader = "nonsense".parse::<Fader>().unwrap_err();
+        assert_eq!(err_fader, ParseFaderError("nonsense".to_string()));
+        assert_eq!(
+            err_fader.to_string(),
+            "unknown fader: nonsense (try: p1, fader1, v1)"
+        );
     }
 }

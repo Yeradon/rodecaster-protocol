@@ -1,14 +1,30 @@
-//! Typed Rodecaster commands.
+//! Typed command builders for controlling RØDECaster functions.
 //!
-//! `Command` is the outgoing vocabulary the server (or any consumer) builds.
-//! [`Command::encode`] produces one or more JUCE change-frame payloads,
-//! addressed through a [`crate::Layout`] discovered from the device's
-//! fullSync. The encoder routes every command through
-//! [`crate::change_frame::encode_property_changed`], so the wire format is
-//! always JUCE-faithful and the ID math lives in one place (the `Layout`),
-//! never duplicated across files.
+//! [`Command`] represents actions sent from your application to the device:
 //!
-//! Wrap each returned payload in a [`crate::frame::Packet`] for the transport.
+//! - **Faders & Channels**: Mute, solo/cue, volume level, strip assignment, and color.
+//! - **Routing Matrix**: Connecting or disconnecting sources to mix outputs, custom sub-mixes.
+//! - **Pads & Sounds**: Triggering SMART pads and sound playback.
+//! - **Audio Processing**: EQ, compressor, high-pass filter, de-esser, and noise gate.
+//! - **Monitoring**: Headphone volume levels and master output settings.
+//!
+//! # Encoding Commands
+//!
+//! You typically encode commands through [`crate::ProtocolSession::encode`], which
+//! automatically formats the command using the active layout:
+//!
+//! ```rust
+//! use rodecaster_protocol::{Command, Fader, ProtocolSession};
+//!
+//! # fn example(session: &ProtocolSession) -> Result<(), Box<dyn std::error::Error>> {
+//! let cmd = Command::SetFaderMute {
+//!     fader: Fader::Physical1,
+//!     mute: true,
+//! };
+//! let payloads = session.encode(&cmd)?;
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::change_frame;
 use crate::juce_var::Value;
@@ -25,7 +41,7 @@ use crate::names::{
 
 /// Canonical trigger payload alias for backward compatibility in tests.
 #[cfg(test)]
-const MIX_LINK_TRIGGER: [u8; 6] = crate::trigger::REQUEST_BYTES;
+const MIX_LINK_TRIGGER: [u8; 6] = crate::trigger::PRESS_BYTES;
 
 /// JUCE `Int` value representing unassigned for `channelInputSource`.
 const CHANNEL_INPUT_SOURCE_UNASSIGNED: i64 = -1;
@@ -53,7 +69,7 @@ fn single_prop_frame(path: &[u32], name: &str, value: &Value) -> Vec<Vec<u8>> {
 
 #[inline]
 fn trigger_frame(path: &[u32], name: &str) -> Vec<Vec<u8>> {
-    single_prop_frame(path, name, &crate::trigger::request_value())
+    single_prop_frame(path, name, &crate::trigger::press_value())
 }
 
 macro_rules! encode_singleton {
@@ -74,13 +90,11 @@ macro_rules! encode_indexed {
     }};
 }
 
-/// Outgoing Rodecaster command.
+/// An outgoing command sent to a RØDECaster console.
 ///
-/// Each variant addresses a logical entity by *name* ([`Fader`], [`Source`],
-/// [`MixOutput`]); [`Command::encode`] resolves the name to a wire index
-/// through the [`Layout`] (and its [`DeviceModel`]), so this enum has zero
-/// knowledge of `0x1C`, `+62`, or any other firmware-specific position
-/// constant, and callers never pass a bare index.
+/// Variants use high-level domain types ([`Fader`], [`Source`], [`MixOutput`])
+/// which are dynamically translated into the device's internal wire addresses
+/// when encoded.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
@@ -121,6 +135,18 @@ pub enum Command {
     /// `mixUnlinkRequest`. `mixDisabled` and `mixMute` retain their prior
     /// values (the unlink does not re-disable or re-mute the cell).
     UnlinkMix { source: Source, mix: MixOutput },
+    /// Set a routing matrix cell's sub-mix send level and tracking value.
+    ///
+    /// Encodes `mixLevelWithAnchor` on the matrix cell's path as `"anchor|value"`.
+    /// In broadcast mixing terminology, `anchor` represents the custom sub-mix
+    /// send level (active when the cell is unlinked), and `value` represents
+    /// the post-fader program level.
+    SetMixLevel {
+        source: Source,
+        mix: MixOutput,
+        anchor: f32,
+        value: f32,
+    },
     /// Wake the device display. A fixed, layout-independent message; see
     /// `SCREEN_TOUCHED_FRAME`.
     ScreenTouched,
@@ -373,10 +399,8 @@ impl Command {
             }
             Command::LinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
-                // Link sequence: enable (the press alone does NOT auto-clear
-                // mixDisabled), unmute (same for mixMute), then a single
-                // Binary trigger write to mixLinkRequest. Empirically validated
-                // on Duo fw 1.7.3 (2026-06-30) by isolating each variable.
+                // Link sequence: enable (mixDisabled = false), unmute (mixMute = false),
+                // then emit the mixLinkRequest trigger pulse.
                 Ok(vec![
                     change_frame::encode_property_changed(
                         &path,
@@ -387,13 +411,27 @@ impl Command {
                     change_frame::encode_property_changed(
                         &path,
                         "mixLinkRequest",
-                        &crate::trigger::request_value(),
+                        &crate::trigger::press_value(),
                     ),
                 ])
             }
             Command::UnlinkMix { source, mix } => {
                 let path = mix_path(layout, *source, *mix)?;
                 Ok(trigger_frame(&path, "mixUnlinkRequest"))
+            }
+            Command::SetMixLevel {
+                source,
+                mix,
+                anchor,
+                value,
+            } => {
+                let path = mix_path(layout, *source, *mix)?;
+                let formatted = format!("{:.1}|{:.1}", anchor, value);
+                Ok(single_prop_frame(
+                    &path,
+                    "mixLevelWithAnchor",
+                    &Value::String(formatted),
+                ))
             }
             Command::ScreenTouched => Ok(vec![SCREEN_TOUCHED_FRAME.to_vec()]),
             Command::PowerOff => {

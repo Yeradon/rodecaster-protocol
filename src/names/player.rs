@@ -1,7 +1,5 @@
 //! [`PlayerParam`]: the singleton `PLAYER`-node parameter family.
 
-use std::fmt;
-
 // The eleven properties a real Pro II / Duo fullSync carries on the single
 // PLAYER node (confirmed from capture, firmware 1.7.3): the long-form audio
 // player's transport, the loaded file, and the in/out + fade envelope.

@@ -70,7 +70,9 @@ pub use app::AppParam;
 pub use audio::AudioParam;
 pub use build::BuildParam;
 pub use channel::ChannelParam;
-pub use core::{DeviceModel, Fader, MixOutput, Source};
+pub use core::{
+    DeviceModel, Fader, MixOutput, ParseFaderError, ParseMixOutputError, ParseSourceError, Source,
+};
 pub use ducker::DuckerParam;
 pub use effects::EffectsParam;
 pub use fx_preset::FxPresetParam;

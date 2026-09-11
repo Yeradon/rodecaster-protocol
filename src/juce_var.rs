@@ -1,23 +1,11 @@
-//! Single implementation of the JUCE `juce::var` wire codec.
+//! JUCE `var` binary value encoding and decoding.
 //!
-//! The Rodecaster protocol speaks `juce::ValueTreeSynchroniser` on the wire, so
-//! every value (the full-sync initial state, incremental `propertyChanged`
-//! updates, and the commands we *send*) is a `juce::var` framed by JUCE's
-//! `writeCompressedInt`. This module owns that byte format exactly once, for
-//! BOTH directions:
+//! Values exchanged with RØDECaster devices are serialized using the JUCE
+//! `var::writeToStream` format. Each value consists of a compressed integer
+//! length, a marker byte indicating the variant type, and the raw payload.
 //!
-//! - decode: [`crate::valuetree`] (full tree) and the consumer's incremental
-//!   parser.
-//! - encode: the consumer's command builders, via [`Value::write_to_stream`].
-//!
-//! Keeping read and write in one place is the whole point: every
-//! [`Value::write_to_stream`] output round-trips back through [`read_value`],
-//! so the encoder and parser can never silently drift apart.
-//!
-//! Frame shape (`juce::var::writeToStream`): `writeCompressedInt(1 + payload)`,
-//! then a marker byte, then the payload. `writeCompressedInt(n)` is a size byte
-//! (low 7 bits = number of little-endian value bytes, capped at 4; high bit =
-//! sign) followed by that many value bytes.
+//! This module provides the [`Value`] enum to represent these types in Rust
+//! alongside functions to read and write them on binary streams.
 
 /// `juce::var` `VariantStreamMarkers`: the byte after a value's length frame.
 pub mod marker {
@@ -79,34 +67,6 @@ impl Value {
         match self {
             Value::Int(i) | Value::Int64(i) => Some(*i),
             _ => None,
-        }
-    }
-
-    /// Render for the diagnostic XML dump.
-    pub fn to_xml_string(&self) -> String {
-        match self {
-            Value::Bool(true) => "1".to_string(),
-            Value::Bool(false) => "0".to_string(),
-            Value::Int(i) | Value::Int64(i) => i.to_string(),
-            Value::Double(d) => {
-                // Match the reference XML: 1 decimal place for clean values.
-                if d.fract() == 0.0 {
-                    format!("{:.1}", d)
-                } else {
-                    format!("{}", d)
-                }
-            }
-            Value::String(s) => s.clone(),
-            Value::Array(arr) => arr
-                .iter()
-                .map(|v| v.to_xml_string())
-                .collect::<Vec<_>>()
-                .join(","),
-            Value::Binary(data) => data.iter().map(|b| format!("{:02x}", b)).collect(),
-            Value::Undefined => String::new(),
-            Value::Unknown { type_id, data } => {
-                format!("unknown_0x{:02x}_{}_bytes", type_id, data.len())
-            }
         }
     }
 

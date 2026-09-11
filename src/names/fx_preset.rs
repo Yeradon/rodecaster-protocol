@@ -1,7 +1,5 @@
 //! [`FxPresetParam`]: per-`FXPRESET`-node parameter family.
 
-use std::fmt;
-
 // FXPRESET nodes carry two properties per preset (confirmed from capture,
 // firmware 1.7.3): the effect preset's serialized contents blob and its
 // preset index.

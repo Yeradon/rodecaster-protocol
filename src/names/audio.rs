@@ -1,7 +1,5 @@
 //! [`AudioParam`]: the singleton `AUDIO`-node parameter family.
 
-use std::fmt;
-
 // The nine properties a real Pro II / Duo fullSync carries on the single
 // AUDIO node (confirmed from capture, firmware 1.7.3): global audio-engine
 // state: buffer size, sample rate, input/output channel counts, in/out

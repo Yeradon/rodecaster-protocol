@@ -1,4 +1,7 @@
-//! JUCE ValueTree change-frame codec.
+//! JUCE `ValueTreeSynchroniser` change-frame encoder and decoder.
+//!
+//! Handles low-level incremental change messages such as property modifications
+//! and child node additions or removals.
 
 use crate::juce_var::{write_compressed_int, Reader, Value};
 use crate::valuetree::{parse_node, Node};
